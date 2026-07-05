@@ -1,0 +1,6 @@
+{
+  "name": "TrackBook Admin Panel",
+  "description": "An enterprise financial auditing and cashbook management dashboard equipped with AI-powered receipt scanning and OCR parsing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
