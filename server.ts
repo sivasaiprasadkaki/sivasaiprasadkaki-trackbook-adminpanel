@@ -39,10 +39,13 @@ let supabaseClient: any = null;
 
 function getSupabase() {
   if (!supabaseClient) {
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_ANON_KEY;
+    const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const key = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+    console.log(`[DEBUG] Initializing Supabase Client. URL defined: ${!!url}, Anon Key defined: ${!!key}`);
     if (url && key) {
       supabaseClient = createClient(url, key);
+    } else {
+      console.error('[DEBUG] Failed to initialize Supabase Client: Missing URL or Anon Key.');
     }
   }
   return supabaseClient;
@@ -52,8 +55,9 @@ let supabaseAdminClient: any = null;
 
 function getSupabaseAdmin() {
   if (!supabaseAdminClient) {
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+    console.log(`[DEBUG] Initializing Supabase Admin Client. URL defined: ${!!url}, Service Role Key defined: ${!!key}`);
     if (url && key) {
       supabaseAdminClient = createClient(url, key, {
         auth: {
@@ -61,6 +65,8 @@ function getSupabaseAdmin() {
           persistSession: false
         }
       });
+    } else {
+      console.warn('[DEBUG] Supabase Admin Client not initialized: Missing URL or Service Role Key.');
     }
   }
   return supabaseAdminClient;
@@ -118,9 +124,11 @@ if (process.env.GEMINI_API_KEY) {
 
 // Stats
 app.get('/api/stats', async (req, res) => {
+  console.log('[DEBUG] Dashboard query started...');
   const adminClient = getSupabaseAdmin();
   const supabase = adminClient || getSupabase();
   if (!supabase) {
+    console.error('[DEBUG] Dashboard query failed: Supabase client is missing.');
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
 
@@ -130,7 +138,11 @@ app.get('/api/stats', async (req, res) => {
       .from('users')
       .select('id, status, email');
 
-    if (usersErr) throw usersErr;
+    if (usersErr) {
+      console.error('[DEBUG] Dashboard query - users fetch failure:', usersErr);
+      throw usersErr;
+    }
+    console.log(`[DEBUG] Dashboard query - Users loaded from DB: ${usersData?.length || 0}`);
 
     // Fetch auth users if possible to merge last_sign_in_at and compute actual total users
     let authUsersMap = new Map<string, any>();
@@ -247,6 +259,8 @@ app.get('/api/stats', async (req, res) => {
     // 1.2 MB per attachment estimate mapped to GB
     const storageUsedGB = Number(((totalFiles * 1.2 * 1024 * 1024) / (1024 * 1024 * 1024)).toFixed(3));
 
+    console.log(`[DEBUG] Dashboard query completed - Users: ${totalUsers}, Entries: ${entriesCount}, Total Files: ${totalFiles}, Storage: ${storageUsedGB} GB`);
+
     res.json({
       totalUsers: totalUsers,
       activeUsers: activeCount,
@@ -260,15 +274,17 @@ app.get('/api/stats', async (req, res) => {
       schemaMissing: false
     });
   } catch (err: any) {
-    console.error('Supabase stats calculation error:', err);
+    console.error('[DEBUG] Dashboard query failed / RLS error:', err);
     res.status(500).json({ error: err.message, code: err.code });
   }
 });
 
 // Users
 app.get('/api/users', async (req, res) => {
+  console.log('[DEBUG] Users load started...');
   const supabase = getSupabase();
   if (!supabase) {
+    console.error('[DEBUG] Users load failed: Supabase client is missing.');
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
 
@@ -466,9 +482,10 @@ app.get('/api/users', async (req, res) => {
       });
     }
 
+    console.log(`[DEBUG] Users loaded completed successfully. Count: ${finalUsers.length}`);
     res.json(finalUsers);
   } catch (err: any) {
-    console.error('Supabase users fetch error:', err);
+    console.error('[DEBUG] Users load failed / RLS error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -696,9 +713,11 @@ app.delete('/api/users/:id', async (req, res) => {
 
 // Cashbooks
 app.get('/api/cashbooks', async (req, res) => {
+  console.log('[DEBUG] Cashbooks loaded started...');
   const adminClient = getSupabaseAdmin();
   const supabase = adminClient || getSupabase();
   if (!supabase) {
+    console.error('[DEBUG] Cashbooks load failed: Supabase client is missing.');
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
 
@@ -871,9 +890,10 @@ app.get('/api/cashbooks', async (req, res) => {
       };
     });
 
+    console.log(`[DEBUG] Cashbooks loaded completed successfully. Count: ${mapped.length}`);
     res.json(mapped);
   } catch (err: any) {
-    console.error('Supabase cashbooks fetch error:', err);
+    console.error('[DEBUG] Cashbooks load failed / RLS error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -926,9 +946,11 @@ app.post('/api/cashbooks', async (req, res) => {
 
 // Entries
 app.get('/api/entries', async (req, res) => {
+  console.log('[DEBUG] Entries load started...');
   const adminClient = getSupabaseAdmin();
   const supabase = adminClient || getSupabase();
   if (!supabase) {
+    console.error('[DEBUG] Entries load failed: Supabase client is missing.');
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
 
@@ -1032,9 +1054,10 @@ app.get('/api/entries', async (req, res) => {
       };
     });
 
+    console.log(`[DEBUG] Entries loaded completed successfully. Count: ${mapped.length}`);
     res.json(mapped);
   } catch (err: any) {
-    console.error('Supabase entries fetch error:', err);
+    console.error('[DEBUG] Entries load failed / RLS error:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1076,15 +1099,21 @@ app.post('/api/entries', async (req, res) => {
       category: category || 'Misc',
       mode: mode || 'Cash',
       date: date || new Date().toISOString().split('T')[0],
-      status: status || 'Success',
       created_at: new Date().toISOString()
     };
+
+    console.log('[DEBUG] Creating database entry with payload:', JSON.stringify(entryPayload));
 
     const { error } = await supabase
       .from('entries')
       .insert([entryPayload]);
 
-    if (error) throw error;
+    if (error) {
+      console.error('[DEBUG] Failed to insert entry into Supabase:', error);
+      throw error;
+    }
+
+    console.log(`[DEBUG] Entry created successfully with ID: ${id}`);
 
     res.status(201).json({
       id,
@@ -1630,7 +1659,7 @@ app.get('/api/cloudinary/resources', async (req, res) => {
     let resources: any[] = [];
     try {
       const searchResult = await cloudinary.search
-        .expression('*')
+        .expression('resource_type:image OR resource_type:raw')
         .max_results(500)
         .with_field('tags')
         .with_field('context')
