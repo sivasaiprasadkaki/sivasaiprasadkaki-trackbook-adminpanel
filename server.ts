@@ -297,10 +297,17 @@ async function getAdminSecurity(): Promise<{ encrypted_totp_secret: string | nul
     try {
       const { data, error } = await adminClient.from('admin_security').select('*').eq('id', 'admin');
       if (!error && data && data.length > 0) {
+        console.log(`[DEBUG] getAdminSecurity: Loaded from DATABASE. is_initialized=${data[0].is_initialized}`);
         return {
           encrypted_totp_secret: data[0].encrypted_totp_secret,
           is_initialized: data[0].is_initialized
         };
+      } else if (error) {
+        if (error.message && error.message.includes('Could not find the table')) {
+          console.log('[DEBUG] admin_security table is not present in Supabase. Using robust local fallback file security system.');
+        } else {
+          console.warn('[DB WARNING] admin_security read error:', error.message);
+        }
       }
     } catch (err: any) {
       console.warn('[DB WARNING] admin_security read exception:', err.message);
@@ -310,12 +317,14 @@ async function getAdminSecurity(): Promise<{ encrypted_totp_secret: string | nul
   // Fallback to local file if DB query fails or has no record
   const fallback = readFallback();
   if (fallback) {
+    console.log(`[DEBUG] getAdminSecurity: Loaded from FALLBACK FILE. is_initialized=${fallback.is_initialized}`);
     return {
       encrypted_totp_secret: fallback.encrypted_totp_secret,
       is_initialized: fallback.is_initialized
     };
   }
 
+  console.log('[DEBUG] getAdminSecurity: No record found anywhere. is_initialized=false');
   return { encrypted_totp_secret: null, is_initialized: false };
 }
 
@@ -335,7 +344,11 @@ async function saveAdminSecurity(encrypted_secret: string, is_initialized: boole
       if (!error) {
         return true;
       }
-      console.error('[DB ERROR] Failed to upsert admin_security:', error.message);
+      if (error.message && error.message.includes('Could not find the table')) {
+        console.log('[DEBUG] admin_security table is not present in Supabase. Saved securely to fallback file.');
+      } else {
+        console.error('[DB ERROR] Failed to upsert admin_security:', error.message);
+      }
     } catch (err: any) {
       console.error('[DB EXCEPTION] Failed to upsert admin_security:', err.message);
     }
@@ -360,7 +373,11 @@ async function deleteAdminSecurity(): Promise<boolean> {
       if (!error) {
         return true;
       }
-      console.error('[DB ERROR] Failed to delete admin_security:', error.message);
+      if (error.message && error.message.includes('Could not find the table')) {
+        console.log('[DEBUG] admin_security table is not present in Supabase. Deleted fallback file setup.');
+      } else {
+        console.error('[DB ERROR] Failed to delete admin_security:', error.message);
+      }
     } catch (err: any) {
       console.error('[DB EXCEPTION] Failed to delete admin_security:', err.message);
     }
@@ -386,11 +403,17 @@ authRouter.get('/session', async (req, res) => {
       const session = JSON.parse(decrypted);
       if (session && session.admin && session.expiresAt > Date.now()) {
         authenticated = true;
+      } else {
+        console.log(`[DEBUG] Session token expired or invalid. Expires at: ${session?.expiresAt}, Now: ${Date.now()}`);
       }
-    } catch (e) {
-      // Ignored
+    } catch (e: any) {
+      console.warn('[DEBUG] Failed to parse/decrypt session token cookie:', e.message);
     }
+  } else {
+    console.log('[DEBUG] No trackbook_session cookie found in request.');
   }
+
+  console.log(`[DEBUG] /api/auth/session response: authenticated=${authenticated}, is_initialized=${security.is_initialized}`);
 
   res.json({
     authenticated,
@@ -583,6 +606,7 @@ authRouter.post('/verify', async (req, res) => {
 });
 
 authRouter.post('/logout', (req, res) => {
+  console.log('[DEBUG] /api/auth/logout: Initiating administrator logout. Clearing trackbook_session cookie. No TOTP secret or is_initialized settings are modified.');
   const cookieOptions = getSessionCookieAttributes(req, 0);
   res.setHeader('Set-Cookie', `trackbook_session=; ${cookieOptions}`);
   res.json({ success: true });

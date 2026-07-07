@@ -3,38 +3,48 @@ import { BookOpenText, KeyRound, ShieldAlert, CheckCircle2, RefreshCw } from 'lu
 
 interface AdminAuthProps {
   onSuccess: () => void;
+  initialIsInitialized?: boolean | null;
 }
 
-export default function AdminAuth({ onSuccess }: AdminAuthProps) {
-  const [isInitialized, setIsInitialized] = useState<boolean | null>(null);
+export default function AdminAuth({ onSuccess, initialIsInitialized = null }: AdminAuthProps) {
+  const [isInitialized, setIsInitialized] = useState<boolean | null>(initialIsInitialized);
   const [qrCode, setQrCode] = useState<string>('');
   const [setupKey, setSetupKey] = useState<string>('');
   const [code, setCode] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
-  const [checkingSession, setCheckingSession] = useState<boolean>(true);
+  const [checkingSession, setCheckingSession] = useState<boolean>(initialIsInitialized === null);
 
   // Check initial state
   const checkStatus = async () => {
     try {
       setCheckingSession(true);
+      console.log('[DEBUG] AdminAuth: Fetching session from /api/auth/session...');
       const res = await fetch('/api/auth/session', { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
+        console.log(`[DEBUG] SESSION: authenticated=${data.authenticated}, initialized=${data.is_initialized}`);
         setIsInitialized(data.is_initialized);
         
         if (data.authenticated) {
+          console.log('[DEBUG] SESSION: Already authenticated, bypassing login page.');
           onSuccess();
           return;
         }
 
         // If not initialized, trigger setup secret generation
-        if (!data.is_initialized) {
+        if (data.is_initialized === false) {
+          console.log('[DEBUG] SESSION: initialized=false -> generating QR code setup.');
           await triggerSetup();
+        } else {
+          console.log('[DEBUG] SESSION: authenticated=false, initialized=true -> rendering 6-digit TOTP verification screen only.');
         }
+      } else {
+        console.error('[DEBUG] Session fetch failed with status:', res.status);
+        setError('Failed to fetch security status.');
       }
     } catch (err) {
-      console.error('Error checking auth session status:', err);
+      console.error('[DEBUG] Error checking auth session status:', err);
       setError('Connection to security services failed. Please check backend.');
     } finally {
       setCheckingSession(false);
@@ -44,11 +54,13 @@ export default function AdminAuth({ onSuccess }: AdminAuthProps) {
   const triggerSetup = async () => {
     try {
       setError('');
+      console.log('[DEBUG] AdminAuth: Requesting new setup secret from /api/auth/setup...');
       const res = await fetch('/api/auth/setup', { method: 'POST', credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setQrCode(data.qrCode);
         setSetupKey(data.secret);
+        console.log('[DEBUG] AdminAuth: Setup QR code generated successfully.');
       } else {
         const errData = await res.json();
         setError(errData.error || 'Failed to initialize security key');
@@ -60,8 +72,21 @@ export default function AdminAuth({ onSuccess }: AdminAuthProps) {
   };
 
   useEffect(() => {
-    checkStatus();
-  }, []);
+    if (initialIsInitialized !== null) {
+      setIsInitialized(initialIsInitialized);
+      setCheckingSession(false);
+      console.log(`[DEBUG] AdminAuth: Initialized with prop initialIsInitialized=${initialIsInitialized}`);
+      
+      if (initialIsInitialized === false) {
+        console.log('[DEBUG] SESSION: initialized=false -> generating QR code setup.');
+        triggerSetup();
+      } else {
+        console.log('[DEBUG] SESSION: authenticated=false, initialized=true -> rendering 6-digit TOTP verification screen only.');
+      }
+    } else {
+      checkStatus();
+    }
+  }, [initialIsInitialized]);
 
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();

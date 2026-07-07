@@ -18,6 +18,7 @@ export default function App() {
   const navigate = useNavigate();
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [isInitialized, setIsInitialized] = useState<boolean | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchValue, setSearchValue] = useState('');
@@ -26,16 +27,22 @@ export default function App() {
   useEffect(() => {
     const checkAuth = async () => {
       try {
+        console.log('[DEBUG] App: Checking authentication session status...');
         const res = await fetch('/api/auth/session', { credentials: 'include' });
         if (res.ok) {
           const data = await res.json();
+          console.log(`[DEBUG] App SESSION: authenticated=${data.authenticated}, is_initialized=${data.is_initialized}`);
+          setIsInitialized(data.is_initialized);
           setIsAuthenticated(data.authenticated);
         } else {
+          console.error('[DEBUG] App: Session endpoint returned error status:', res.status);
           setIsAuthenticated(false);
+          setIsInitialized(true); // default fallback to prevent setup screens on fetch error
         }
       } catch (err) {
-        console.error('Error checking auth session:', err);
+        console.error('[DEBUG] App: Error checking auth session:', err);
         setIsAuthenticated(false);
+        setIsInitialized(true); // default fallback
       }
     };
     checkAuth();
@@ -213,7 +220,7 @@ export default function App() {
 
   // If unauthenticated, display the TrackBook custom verification / setup screen
   if (isAuthenticated === false) {
-    return <AdminAuth onSuccess={() => setIsAuthenticated(true)} />;
+    return <AdminAuth onSuccess={() => setIsAuthenticated(true)} initialIsInitialized={isInitialized} />;
   }
 
   return (
