@@ -385,7 +385,21 @@ authRouter.post('/setup', async (req, res) => {
     const otpauthUrl = totp.toURI({ label: 'admin@trackbook.xyz', issuer: 'TrackBook Admin', secret });
     const qrCodeDataUrl = await QRCode.toDataURL(otpauthUrl);
 
+    // 1. In-memory fallback
     pendingSecrets['admin'] = secret;
+
+    // 2. Persist in database/fallback file with is_initialized = false
+    const encryptedSecret = encryptSecret(secret);
+    try {
+      await saveAdminSecurity(encryptedSecret, false);
+      console.log('[AUTH INFO] Pending TOTP secret saved persistently to database/fallback');
+    } catch (dbErr: any) {
+      console.error('[AUTH ERROR] Failed to save pending TOTP secret to database:', dbErr.message);
+    }
+
+    // 3. Persist in HttpOnly cookie as client-side isolated session state (30 mins validity)
+    const cookieOptions = getSessionCookieAttributes(req, 30 * 60);
+    res.setHeader('Set-Cookie', `trackbook_pending_setup=${encodeURIComponent(encryptedSecret)}; ${cookieOptions}`);
 
     res.json({
       secret,
@@ -423,9 +437,40 @@ authRouter.post('/verify', async (req, res) => {
         console.warn('[AUTH FAILURE] Setup verification failed: Setup already completed');
         return res.status(400).json({ error: 'Setup already completed' });
       }
-      secret = pendingSecrets['admin'] || '';
+
+      // Try reading from cookie first
+      const cookies = parseCookies(req.headers.cookie);
+      const pendingCookie = cookies['trackbook_pending_setup'];
+      if (pendingCookie) {
+        try {
+          const decoded = decodeURIComponent(pendingCookie);
+          secret = decryptSecret(decoded);
+          console.log('[AUTH INFO] Successfully read pending setup secret from cookie');
+        } catch (cookieErr) {
+          console.error('[AUTH FAILURE] Failed to decrypt pending setup cookie:', cookieErr);
+        }
+      }
+
+      // If not found in cookie, try reading from the persistent db/fallback record
+      if (!secret && security.encrypted_totp_secret) {
+        try {
+          secret = decryptSecret(security.encrypted_totp_secret);
+          console.log('[AUTH INFO] Successfully read pending setup secret from persistent database/fallback');
+        } catch (dbReadErr) {
+          console.error('[AUTH FAILURE] Failed to decrypt pending setup from database:', dbReadErr);
+        }
+      }
+
+      // Final fallback to in-memory
       if (!secret) {
-        console.warn('[AUTH FAILURE] Setup verification failed: No pending setup secret in memory');
+        secret = pendingSecrets['admin'] || '';
+        if (secret) {
+          console.log('[AUTH INFO] Read pending setup secret from in-memory fallback');
+        }
+      }
+
+      if (!secret) {
+        console.warn('[AUTH FAILURE] Setup verification failed: No pending setup secret found in cookies, database, or memory');
         return res.status(400).json({ error: 'No pending setup. Please request setup first.' });
       }
     } else {
@@ -466,11 +511,12 @@ authRouter.post('/verify', async (req, res) => {
 
     if (isSetup) {
       try {
-        // Encrypt secret and save
+        // Encrypt secret and save as permanently initialized
         const encrypted = encryptSecret(secret);
         await saveAdminSecurity(encrypted, true);
         // Clean up memory
         delete pendingSecrets['admin'];
+        console.log('[AUTH INFO] Setup completed successfully and saved to DB');
       } catch (saveErr) {
         console.error('[AUTH FAILURE] Failed to store TOTP secret during setup:', saveErr);
         return res.status(500).json({ error: 'Internal error: failed to store TOTP secret' });
@@ -493,8 +539,12 @@ authRouter.post('/verify', async (req, res) => {
 
     // Set cookie
     try {
-      const cookieOptions = getSessionCookieAttributes(req);
-      res.setHeader('Set-Cookie', `trackbook_session=${encodeURIComponent(encryptedSession)}; ${cookieOptions}`);
+      const sessionCookieOptions = getSessionCookieAttributes(req);
+      const clearPendingCookieOptions = getSessionCookieAttributes(req, 0);
+      res.setHeader('Set-Cookie', [
+        `trackbook_session=${encodeURIComponent(encryptedSession)}; ${sessionCookieOptions}`,
+        `trackbook_pending_setup=; ${clearPendingCookieOptions}`
+      ]);
     } catch (cookieErr) {
       console.error('[AUTH FAILURE] Cookie creation failed:', cookieErr);
       return res.status(500).json({ error: 'Internal error: cookie creation failed' });
