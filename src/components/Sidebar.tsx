@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import {
   LayoutDashboard,
   Users,
@@ -5,14 +6,13 @@ import {
   ClipboardList,
   Paperclip,
   Cloud,
-  TrendingUp,
   Settings,
   BookOpenText
 } from 'lucide-react';
 
 interface SidebarProps {
   currentTab: string;
-  onTabChange: (tab: string) => void;
+  onTabChange?: (tab: string) => void;
 }
 
 export default function Sidebar({ currentTab, onTabChange }: SidebarProps) {
@@ -44,10 +44,11 @@ export default function Sidebar({ currentTab, onTabChange }: SidebarProps) {
           const Icon = item.icon;
           const isActive = currentTab === item.id;
           return (
-            <button
+            <Link
               key={item.id}
-              onClick={() => onTabChange(item.id)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-150 ease-in-out group ${
+              to={`/${item.id}`}
+              onClick={() => onTabChange && onTabChange(item.id)}
+              className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-150 ease-in-out group ${
                 isActive
                   ? 'bg-blue-50 text-blue-600 border-r-4 border-blue-600 font-bold'
                   : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
@@ -57,16 +58,17 @@ export default function Sidebar({ currentTab, onTabChange }: SidebarProps) {
                 isActive ? 'text-blue-600' : 'text-slate-400 group-hover:text-blue-600'
               }`} />
               <span>{item.label}</span>
-            </button>
+            </Link>
           );
         })}
       </div>
 
       {/* Bottom Settings Link */}
       <div className="px-4 pt-4 border-t border-slate-100">
-        <button
-          onClick={() => onTabChange('settings')}
-          className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-150 ease-in-out group ${
+        <Link
+          to="/settings"
+          onClick={() => onTabChange && onTabChange('settings')}
+          className={`flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-150 ease-in-out group ${
             currentTab === 'settings'
               ? 'bg-blue-50 text-blue-600 border-r-4 border-blue-600 font-bold'
               : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
@@ -76,7 +78,7 @@ export default function Sidebar({ currentTab, onTabChange }: SidebarProps) {
             currentTab === 'settings' ? 'text-blue-600' : 'text-slate-400 group-hover:text-blue-600'
           }`} />
           <span>Settings</span>
-        </button>
+        </Link>
       </div>
     </nav>
   );

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Topbar from './components/Topbar';
 import DashboardView from './components/DashboardView';
@@ -11,10 +12,51 @@ import SettingsView from './components/SettingsView';
 import { Entry } from './types';
 
 export default function App() {
-  const [currentTab, setCurrentTab] = useState('dashboard');
+  const location = useLocation();
+  const navigate = useNavigate();
+
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchValue, setSearchValue] = useState('');
+
+  // Resolve currentTab from pathname (e.g. "/users" -> "users", "/" or "/dashboard" -> "dashboard")
+  const getTabFromPath = (path: string) => {
+    const cleanPath = path.replace(/^\//, '');
+    if (cleanPath === '' || cleanPath === 'dashboard') return 'dashboard';
+    return cleanPath;
+  };
+
+  const currentTab = getTabFromPath(location.pathname);
+
+  // Validate and redirect routes to /dashboard if necessary
+  useEffect(() => {
+    const validTabs = ['dashboard', 'users', 'cashbooks', 'entries', 'attachments', 'cloud', 'settings'];
+    const tab = location.pathname.replace(/^\//, '');
+    if (location.pathname === '/' || location.pathname === '') {
+      navigate('/dashboard', { replace: true });
+    } else if (!validTabs.includes(tab)) {
+      navigate('/dashboard', { replace: true });
+    }
+  }, [location.pathname, navigate]);
+
+  // Dynamic Browser Title Updater
+  useEffect(() => {
+    const titleMap: Record<string, string> = {
+      'dashboard': 'TrackBook Admin Panel | Dashboard',
+      'users': 'TrackBook Admin Panel | Users',
+      'cashbooks': 'TrackBook Admin Panel | Cashbooks',
+      'entries': 'TrackBook Admin Panel | Entries',
+      'attachments': 'TrackBook Admin Panel | Attachments',
+      'cloud': 'TrackBook Admin Panel | Cloud',
+      'settings': 'TrackBook Admin Panel | Settings',
+    };
+    document.title = titleMap[currentTab] || 'TrackBook Admin Panel';
+  }, [currentTab]);
+
+  // Clear search on tab changes (detected via route change)
+  useEffect(() => {
+    setSearchValue('');
+  }, [location.pathname]);
 
   // Fetch entries ledger
   const fetchEntries = async () => {
@@ -77,8 +119,8 @@ export default function App() {
         return (
           <DashboardView
             entries={entries}
-            onAddEntryClick={() => setCurrentTab('entries')}
-            onNavigateToTab={(tab) => setCurrentTab(tab)}
+            onAddEntryClick={() => navigate('/entries')}
+            onNavigateToTab={(tab) => navigate('/' + tab)}
           />
         );
       case 'users':
@@ -99,7 +141,13 @@ export default function App() {
       case 'settings':
         return <SettingsView onResetDatabase={fetchEntries} />;
       default:
-        return <DashboardView entries={entries} onAddEntryClick={() => setCurrentTab('entries')} onNavigateToTab={setCurrentTab} />;
+        return (
+          <DashboardView
+            entries={entries}
+            onAddEntryClick={() => navigate('/entries')}
+            onNavigateToTab={(tab) => navigate('/' + tab)}
+          />
+        );
     }
   };
 
@@ -109,8 +157,7 @@ export default function App() {
       <Sidebar
         currentTab={currentTab}
         onTabChange={(tab) => {
-          setCurrentTab(tab);
-          setSearchValue(''); // Clear search on tab changes
+          navigate('/' + tab);
         }}
       />
 
@@ -126,7 +173,7 @@ export default function App() {
               ? setSearchValue
               : undefined
           }
-          onCreateNew={() => setCurrentTab('entries')}
+          onCreateNew={() => navigate('/entries')}
         />
 
         {/* Dynamic Panel view container */}
