@@ -108,6 +108,29 @@ export default function SettingsView({ onResetDatabase }: SettingsViewProps) {
     }
   };
 
+  const handleResetTotp = async () => {
+    if (!confirm('Are you sure you want to reset the Google Authenticator TOTP setup? This will erase the stored secret, set the system as uninitialized, and force a new QR code configuration on next login.')) {
+      return;
+    }
+
+    try {
+      setConnectionStats(prev => ({ ...prev, loading: true }));
+      const res = await fetch('/api/auth/reset-totp', { method: 'POST' });
+      if (res.ok) {
+        setNotification('Google Authenticator (TOTP) successfully reset. A new QR code will be generated on your next admin login.');
+        setTimeout(() => setNotification(null), 5000);
+      } else {
+        const errData = await res.json();
+        alert('Reset error: ' + (errData.error || 'Failed to reset TOTP configuration.'));
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert('Failed to execute reset command: ' + err.message);
+    } finally {
+      setConnectionStats(prev => ({ ...prev, loading: false }));
+    }
+  };
+
   return (
     <div className="space-y-6 max-w-4xl">
       {/* Page Header */}
@@ -330,8 +353,8 @@ export default function SettingsView({ onResetDatabase }: SettingsViewProps) {
         </div>
 
         {/* Developer / Auditing Debug actions */}
-        <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
-          <h3 className="font-sans text-sm font-bold text-red-600 flex items-center gap-2 mb-4">
+        <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
+          <h3 className="font-sans text-sm font-bold text-red-600 flex items-center gap-2 mb-2">
             <Shield className="w-4 h-4" />
             <span>Danger Zone & Debugger Controls</span>
           </h3>
@@ -353,6 +376,26 @@ export default function SettingsView({ onResetDatabase }: SettingsViewProps) {
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Reset State</span>
+            </button>
+          </div>
+
+          <div className="border border-red-100 bg-red-50/20 rounded-lg p-5 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div>
+              <h4 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                <Key className="w-4.5 h-4.5 text-red-600" />
+                <span>Reset Google Authenticator (TOTP)</span>
+              </h4>
+              <p className="text-xs text-slate-500 mt-1 max-w-lg leading-relaxed">
+                Deletes the permanently stored TOTP secret and sets the workspace as uninitialized. This will require generating a new Google Authenticator QR code on the next login attempt.
+              </p>
+            </div>
+
+            <button
+              onClick={handleResetTotp}
+              className="h-10 px-4 bg-red-50 border border-red-200 hover:bg-red-100 text-red-700 rounded-lg text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shrink-0"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Reset Authenticator</span>
             </button>
           </div>
         </div>

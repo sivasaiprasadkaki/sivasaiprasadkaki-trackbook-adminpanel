@@ -159,7 +159,7 @@ export default function AdminAuth({ onSuccess }: AdminAuthProps) {
         <form onSubmit={handleVerify} className="space-y-5">
           <div>
             <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
-              Enter Verification Code
+              {isInitialized ? 'Enter your 6-digit Google Authenticator code' : 'Enter Verification Code'}
             </label>
             <input
               type="text"

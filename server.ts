@@ -343,6 +343,31 @@ async function saveAdminSecurity(encrypted_secret: string, is_initialized: boole
   return false;
 }
 
+async function deleteAdminSecurity(): Promise<boolean> {
+  // Delete the fallback file
+  try {
+    if (fs.existsSync(FALLBACK_PATH)) {
+      fs.unlinkSync(FALLBACK_PATH);
+    }
+  } catch (err) {
+    console.error('Failed to delete fallback security:', err);
+  }
+
+  const adminClient = getSupabaseAdmin();
+  if (adminClient) {
+    try {
+      const { error } = await adminClient.from('admin_security').delete().eq('id', 'admin');
+      if (!error) {
+        return true;
+      }
+      console.error('[DB ERROR] Failed to delete admin_security:', error.message);
+    } catch (err: any) {
+      console.error('[DB EXCEPTION] Failed to delete admin_security:', err.message);
+    }
+  }
+  return true;
+}
+
 const loginAttempts: Record<string, { count: number; lockedUntil: number }> = {};
 const pendingSecrets: Record<string, string> = {};
 
@@ -561,6 +586,39 @@ authRouter.post('/logout', (req, res) => {
   const cookieOptions = getSessionCookieAttributes(req, 0);
   res.setHeader('Set-Cookie', `trackbook_session=; ${cookieOptions}`);
   res.json({ success: true });
+});
+
+authRouter.post('/reset-totp', async (req, res) => {
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionToken = cookies['trackbook_session'];
+  let authenticated = false;
+
+  if (sessionToken) {
+    try {
+      const decrypted = decryptSecret(sessionToken);
+      const session = JSON.parse(decrypted);
+      if (session && session.admin && session.expiresAt > Date.now()) {
+        authenticated = true;
+      }
+    } catch (e) {
+      // Ignored
+    }
+  }
+
+  if (!authenticated) {
+    console.warn('[AUTH FAILURE] Attempted to reset TOTP without an active authenticated session');
+    return res.status(401).json({ error: 'Unauthorized. You must be logged in as an administrator to reset TOTP.' });
+  }
+
+  try {
+    await deleteAdminSecurity();
+    delete pendingSecrets['admin'];
+    console.log('[AUTH INFO] TOTP configuration reset successfully.');
+    res.json({ success: true, message: 'Google Authenticator configuration reset successfully.' });
+  } catch (err: any) {
+    console.error('[AUTH ERROR] Error resetting TOTP:', err);
+    res.status(500).json({ error: 'Failed to reset Google Authenticator configuration.' });
+  }
 });
 
 app.use('/api/auth', authRouter);
