@@ -9,15 +9,37 @@ import EntriesView from './components/EntriesView';
 import AttachmentsView from './components/AttachmentsView';
 import AIAttachmentsView from './components/AIAttachmentsView';
 import SettingsView from './components/SettingsView';
+import AdminAuth from './components/AdminAuth';
 import { Entry } from './types';
+import { RefreshCw } from 'lucide-react';
 
 export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
 
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchValue, setSearchValue] = useState('');
+
+  // Check initial authentication state
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const res = await fetch('/api/auth/session', { credentials: 'include' });
+        if (res.ok) {
+          const data = await res.json();
+          setIsAuthenticated(data.authenticated);
+        } else {
+          setIsAuthenticated(false);
+        }
+      } catch (err) {
+        console.error('Error checking auth session:', err);
+        setIsAuthenticated(false);
+      }
+    };
+    checkAuth();
+  }, [location.pathname]);
 
   // Resolve currentTab from pathname (e.g. "/users" -> "users", "/" or "/dashboard" -> "dashboard")
   const getTabFromPath = (path: string) => {
@@ -30,6 +52,7 @@ export default function App() {
 
   // Validate and redirect routes to /dashboard if necessary
   useEffect(() => {
+    if (isAuthenticated === false) return; // don't redirect when in auth screen
     const validTabs = ['dashboard', 'users', 'cashbooks', 'entries', 'attachments', 'cloud', 'settings'];
     const tab = location.pathname.replace(/^\//, '');
     if (location.pathname === '/' || location.pathname === '') {
@@ -37,7 +60,7 @@ export default function App() {
     } else if (!validTabs.includes(tab)) {
       navigate('/dashboard', { replace: true });
     }
-  }, [location.pathname, navigate]);
+  }, [location.pathname, navigate, isAuthenticated]);
 
   // Dynamic Browser Title Updater
   useEffect(() => {
@@ -60,9 +83,14 @@ export default function App() {
 
   // Fetch entries ledger
   const fetchEntries = async () => {
+    if (isAuthenticated === false) return;
     try {
       setLoading(true);
-      const res = await fetch('/api/entries');
+      const res = await fetch('/api/entries', { credentials: 'include' });
+      if (res.status === 401) {
+        setIsAuthenticated(false);
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setEntries(data);
@@ -75,18 +103,25 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchEntries();
-  }, []);
+    if (isAuthenticated === true) {
+      fetchEntries();
+    }
+  }, [isAuthenticated]);
 
   // Setup real-time presence ping loop
   useEffect(() => {
+    if (isAuthenticated !== true) return;
     const updatePresence = async () => {
       try {
-        await fetch('/api/users/presence', {
+        const res = await fetch('/api/users/presence', {
           method: 'POST',
+          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: 'triptraccker@gmail.com' })
         });
+        if (res.status === 401) {
+          setIsAuthenticated(false);
+        }
       } catch (err) {
         console.error('Error updating user presence:', err);
       }
@@ -99,7 +134,20 @@ export default function App() {
     const interval = setInterval(updatePresence, 30000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [isAuthenticated]);
+
+  // Logout handler
+  const handleLogout = async () => {
+    try {
+      const res = await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      if (res.ok) {
+        setIsAuthenticated(false);
+        navigate('/dashboard', { replace: true });
+      }
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
+  };
 
   // Map tabs to active labels
   const tabTitles: Record<string, string> = {
@@ -151,14 +199,32 @@ export default function App() {
     }
   };
 
+  // If loading authentication state, show minimal beautiful loading splash
+  if (isAuthenticated === null) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans">
+        <div className="flex flex-col items-center gap-3">
+          <RefreshCw className="w-8 h-8 text-blue-600 animate-spin" />
+          <p className="text-sm font-medium text-slate-500">Checking system authorization status...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // If unauthenticated, display the TrackBook custom verification / setup screen
+  if (isAuthenticated === false) {
+    return <AdminAuth onSuccess={() => setIsAuthenticated(true)} />;
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 font-sans flex text-slate-800">
+    <div className="min-h-screen bg-slate-50 font-sans flex text-slate-800 animate-fade-in">
       {/* Sidebar - fixed left panel */}
       <Sidebar
         currentTab={currentTab}
         onTabChange={(tab) => {
           navigate('/' + tab);
         }}
+        onLogout={handleLogout}
       />
 
       {/* Main Content Stage */}
@@ -177,7 +243,7 @@ export default function App() {
         />
 
         {/* Dynamic Panel view container */}
-        <main className="flex-1 p-8 pt-24 bg-slate-50 overflow-y-auto max-w-[1400px] w-full mx-auto animate-fade-in">
+        <main className="flex-1 p-8 pt-24 bg-slate-50 overflow-y-auto max-w-[1400px] w-full mx-auto">
           {renderTabContent()}
         </main>
       </div>

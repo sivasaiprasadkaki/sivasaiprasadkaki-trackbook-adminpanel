@@ -1,6 +1,14 @@
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
+import crypto from 'crypto';
+import fs from 'fs';
+import { TOTP } from 'otplib';
+import { crypto as nobleCrypto } from '@otplib/plugin-crypto-noble';
+import { base32 as scureBase32 } from '@otplib/plugin-base32-scure';
+
+const totp = new TOTP({ crypto: nobleCrypto, base32: scureBase32 });
+import QRCode from 'qrcode';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
 import { v2 as cloudinary } from 'cloudinary';
@@ -191,6 +199,355 @@ if (process.env.GEMINI_API_KEY) {
 }
 
 // REST API Endpoints
+
+// ------------------------------------------------------------------------
+// ENTERPRISE-GRADE TOTP AUTHENTICATION & SECURITY SYSTEM
+// ------------------------------------------------------------------------
+
+const ENCRYPTION_ALGORITHM = 'aes-256-cbc';
+
+function getEncryptionKey(): Buffer {
+  const key = process.env.ADMIN_TOTP_ENCRYPTION_KEY || 'default_dev_totp_encryption_key_32_chars_long!';
+  // Ensure key is exactly 32 bytes (256 bits)
+  return crypto.createHash('sha256').update(key).digest();
+}
+
+function encryptSecret(plainText: string): string {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, getEncryptionKey(), iv);
+  let encrypted = cipher.update(plainText, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  return iv.toString('hex') + ':' + encrypted;
+}
+
+function decryptSecret(encryptedText: string): string {
+  try {
+    const parts = encryptedText.split(':');
+    if (parts.length !== 2) throw new Error('Invalid encrypted text format');
+    const iv = Buffer.from(parts[0], 'hex');
+    const encrypted = parts[1];
+    const decipher = crypto.createDecipheriv(ENCRYPTION_ALGORITHM, getEncryptionKey(), iv);
+    let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    return decrypted;
+  } catch (err) {
+    console.error('Failed to decrypt TOTP secret:', err);
+    throw new Error('Decryption failed');
+  }
+}
+
+function parseCookies(cookieHeader?: string): Record<string, string> {
+  const list: Record<string, string> = {};
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach(cookie => {
+    const parts = cookie.split('=');
+    const name = parts.shift()?.trim();
+    const value = decodeURIComponent(parts.join('='));
+    if (name) list[name] = value;
+  });
+  return list;
+}
+
+function getSessionCookieAttributes(req: any, maxAge = 24 * 60 * 60) {
+  const isProd = process.env.NODE_ENV === 'production';
+  const host = req.headers.host || '';
+  const isRunApp = host.includes('.run.app');
+  const isSecure = req.headers['x-forwarded-proto'] === 'https' || req.secure || isRunApp;
+
+  // Inside AI Studio preview/share iframe (on .run.app), we MUST use SameSite=None; Secure
+  if (isRunApp && isSecure) {
+    return `Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=None; Secure`;
+  }
+
+  // Standard production defaults
+  if (isProd) {
+    return `Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax; Secure`;
+  }
+
+  // Local dev / other fallback
+  const secureFlag = isSecure ? '; Secure' : '';
+  return `Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax${secureFlag}`;
+}
+
+const FALLBACK_PATH = './admin_security_fallback.json';
+
+function readFallback(): { encrypted_totp_secret: string; is_initialized: boolean } | null {
+  try {
+    if (fs.existsSync(FALLBACK_PATH)) {
+      const data = fs.readFileSync(FALLBACK_PATH, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error('Failed to read fallback security:', err);
+  }
+  return null;
+}
+
+function writeFallback(encrypted_totp_secret: string, is_initialized: boolean) {
+  try {
+    fs.writeFileSync(FALLBACK_PATH, JSON.stringify({ encrypted_totp_secret, is_initialized }), 'utf8');
+  } catch (err) {
+    console.error('Failed to write fallback security:', err);
+  }
+}
+
+async function getAdminSecurity(): Promise<{ encrypted_totp_secret: string | null; is_initialized: boolean }> {
+  const adminClient = getSupabaseAdmin();
+  if (adminClient) {
+    try {
+      const { data, error } = await adminClient.from('admin_security').select('*').eq('id', 'admin');
+      if (!error && data && data.length > 0) {
+        return {
+          encrypted_totp_secret: data[0].encrypted_totp_secret,
+          is_initialized: data[0].is_initialized
+        };
+      }
+    } catch (err: any) {
+      console.warn('[DB WARNING] admin_security read exception:', err.message);
+    }
+  }
+
+  // Fallback to local file if DB query fails or has no record
+  const fallback = readFallback();
+  if (fallback) {
+    return {
+      encrypted_totp_secret: fallback.encrypted_totp_secret,
+      is_initialized: fallback.is_initialized
+    };
+  }
+
+  return { encrypted_totp_secret: null, is_initialized: false };
+}
+
+async function saveAdminSecurity(encrypted_secret: string, is_initialized: boolean): Promise<boolean> {
+  // Always save to fallback first
+  writeFallback(encrypted_secret, is_initialized);
+
+  const adminClient = getSupabaseAdmin();
+  if (adminClient) {
+    try {
+      const { error } = await adminClient.from('admin_security').upsert({
+        id: 'admin',
+        encrypted_totp_secret: encrypted_secret,
+        is_initialized: is_initialized,
+        updated_at: new Date().toISOString()
+      });
+      if (!error) {
+        return true;
+      }
+      console.error('[DB ERROR] Failed to upsert admin_security:', error.message);
+    } catch (err: any) {
+      console.error('[DB EXCEPTION] Failed to upsert admin_security:', err.message);
+    }
+  }
+  return false;
+}
+
+const loginAttempts: Record<string, { count: number; lockedUntil: number }> = {};
+const pendingSecrets: Record<string, string> = {};
+
+// Auth Router & endpoints (registered before requireAuth middleware)
+const authRouter = express.Router();
+
+authRouter.get('/session', async (req, res) => {
+  const security = await getAdminSecurity();
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionToken = cookies['trackbook_session'];
+  let authenticated = false;
+
+  if (sessionToken) {
+    try {
+      const decrypted = decryptSecret(sessionToken);
+      const session = JSON.parse(decrypted);
+      if (session && session.admin && session.expiresAt > Date.now()) {
+        authenticated = true;
+      }
+    } catch (e) {
+      // Ignored
+    }
+  }
+
+  res.json({
+    authenticated,
+    is_initialized: security.is_initialized
+  });
+});
+
+authRouter.post('/setup', async (req, res) => {
+  try {
+    const security = await getAdminSecurity();
+    if (security.is_initialized) {
+      return res.status(400).json({ error: 'Setup already completed' });
+    }
+
+    // Generate secret
+    const secret = totp.generateSecret();
+    const otpauthUrl = totp.toURI({ label: 'admin@trackbook.xyz', issuer: 'TrackBook Admin', secret });
+    const qrCodeDataUrl = await QRCode.toDataURL(otpauthUrl);
+
+    pendingSecrets['admin'] = secret;
+
+    res.json({
+      secret,
+      qrCode: qrCodeDataUrl
+    });
+  } catch (err: any) {
+    console.error('Error in auth/setup:', err);
+    res.status(500).json({ error: 'Failed to generate setup QR code' });
+  }
+});
+
+authRouter.post('/verify', async (req, res) => {
+  const { code, isSetup } = req.body;
+  if (!code || typeof code !== 'string' || code.length !== 6) {
+    console.warn('[AUTH FAILURE] Verification code is missing or not 6 digits');
+    return res.status(400).json({ error: 'Verification code must be 6 digits' });
+  }
+
+  const ip = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'global').split(',')[0].trim();
+  const now = Date.now();
+  const attempt = loginAttempts[ip] || { count: 0, lockedUntil: 0 };
+
+  if (attempt.lockedUntil > now) {
+    const remainingMin = Math.ceil((attempt.lockedUntil - now) / 60000);
+    console.warn(`[AUTH FAILURE] IP rate-limited: ${ip}`);
+    return res.status(429).json({ error: `Too many failed attempts. Please try again in ${remainingMin} minutes.` });
+  }
+
+  try {
+    let secret = '';
+    const security = await getAdminSecurity();
+
+    if (isSetup) {
+      if (security.is_initialized) {
+        console.warn('[AUTH FAILURE] Setup verification failed: Setup already completed');
+        return res.status(400).json({ error: 'Setup already completed' });
+      }
+      secret = pendingSecrets['admin'] || '';
+      if (!secret) {
+        console.warn('[AUTH FAILURE] Setup verification failed: No pending setup secret in memory');
+        return res.status(400).json({ error: 'No pending setup. Please request setup first.' });
+      }
+    } else {
+      if (!security.is_initialized || !security.encrypted_totp_secret) {
+        console.warn('[AUTH FAILURE] Verification failed: System not initialized');
+        return res.status(400).json({ error: 'System not initialized. Please set up first.' });
+      }
+      try {
+        secret = decryptSecret(security.encrypted_totp_secret);
+      } catch (decryptErr) {
+        console.error('[AUTH FAILURE] Failed to decrypt stored TOTP secret:', decryptErr);
+        return res.status(500).json({ error: 'Internal error: encryption/decryption failure' });
+      }
+    }
+
+    // Verify code using otplib
+    const verifyResult = await totp.verify(code, { secret });
+    const isValid = verifyResult && verifyResult.valid;
+
+    if (!isValid) {
+      // Record failed attempt
+      attempt.count += 1;
+      console.warn(`[AUTH FAILURE] Invalid TOTP code submitted. Attempt count: ${attempt.count}`);
+      if (attempt.count >= 5) {
+        attempt.lockedUntil = now + 5 * 60 * 1000; // 5 mins lock
+        loginAttempts[ip] = attempt;
+        console.warn(`[AUTH FAILURE] IP locked out: ${ip}`);
+        return res.status(429).json({ error: 'Too many failed attempts. Locked out for 5 minutes.' });
+      }
+      loginAttempts[ip] = attempt;
+      return res.status(400).json({ error: 'Invalid verification code' });
+    }
+
+    // Clear failed attempts on success
+    attempt.count = 0;
+    attempt.lockedUntil = 0;
+    loginAttempts[ip] = attempt;
+
+    if (isSetup) {
+      try {
+        // Encrypt secret and save
+        const encrypted = encryptSecret(secret);
+        await saveAdminSecurity(encrypted, true);
+        // Clean up memory
+        delete pendingSecrets['admin'];
+      } catch (saveErr) {
+        console.error('[AUTH FAILURE] Failed to store TOTP secret during setup:', saveErr);
+        return res.status(500).json({ error: 'Internal error: failed to store TOTP secret' });
+      }
+    }
+
+    // Create session payload
+    const sessionPayload = {
+      admin: true,
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000 // 24 Hours
+    };
+
+    let encryptedSession = '';
+    try {
+      encryptedSession = encryptSecret(JSON.stringify(sessionPayload));
+    } catch (encryptErr) {
+      console.error('[AUTH FAILURE] Session creation failed (encryption/decryption failure):', encryptErr);
+      return res.status(500).json({ error: 'Internal error: session creation failed' });
+    }
+
+    // Set cookie
+    try {
+      const cookieOptions = getSessionCookieAttributes(req);
+      res.setHeader('Set-Cookie', `trackbook_session=${encodeURIComponent(encryptedSession)}; ${cookieOptions}`);
+    } catch (cookieErr) {
+      console.error('[AUTH FAILURE] Cookie creation failed:', cookieErr);
+      return res.status(500).json({ error: 'Internal error: cookie creation failed' });
+    }
+
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('[AUTH FAILURE] Unexpected error during verification:', err);
+    res.status(500).json({ error: 'Internal server error during verification' });
+  }
+});
+
+authRouter.post('/logout', (req, res) => {
+  const cookieOptions = getSessionCookieAttributes(req, 0);
+  res.setHeader('Set-Cookie', `trackbook_session=; ${cookieOptions}`);
+  res.json({ success: true });
+});
+
+app.use('/api/auth', authRouter);
+
+// Middleware to secure all other API endpoints
+function requireAuth(req: any, res: any, next: any) {
+  // Allow non-API routes to bypass authentication (Vite / SPA fallback / static files)
+  if (!req.path.startsWith('/api/')) {
+    return next();
+  }
+
+  // Allow public auth endpoints
+  if (req.path.startsWith('/api/auth/')) {
+    return next();
+  }
+
+  const cookies = parseCookies(req.headers.cookie);
+  const sessionToken = cookies['trackbook_session'];
+
+  if (!sessionToken) {
+    return res.status(401).json({ error: 'Unauthorized: No active session' });
+  }
+
+  try {
+    const decrypted = decryptSecret(sessionToken);
+    const session = JSON.parse(decrypted);
+    if (!session || !session.admin || session.expiresAt < Date.now()) {
+      return res.status(401).json({ error: 'Unauthorized: Session expired or invalid' });
+    }
+    // Session is valid
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid session' });
+  }
+}
+
+app.use(requireAuth);
 
 // Stats
 app.get('/api/stats', async (req, res) => {

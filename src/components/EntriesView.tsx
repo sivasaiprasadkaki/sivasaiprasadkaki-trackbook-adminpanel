@@ -26,6 +26,8 @@ import {
 } from 'lucide-react';
 import { Entry, Cashbook, User as AppUser } from '../types';
 
+const fetch = (input: RequestInfo | URL, init?: RequestInit) => window.fetch(input, { ...init, credentials: 'include' });
+
 interface EntriesViewProps {
   onEntryLogged: () => void;
   entries: Entry[]; // Maintained for backward compatibility, but we fetch scoped entries dynamically

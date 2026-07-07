@@ -87,3 +87,17 @@ CREATE POLICY "Allow all write" ON attachments FOR ALL USING (true) WITH CHECK (
 
 CREATE POLICY "Allow all read" ON receipts FOR SELECT USING (true);
 CREATE POLICY "Allow all write" ON receipts FOR ALL USING (true) WITH CHECK (true);
+
+-- 6. Create Admin Security Table for TOTP
+CREATE TABLE IF NOT EXISTS admin_security (
+  id TEXT PRIMARY KEY,
+  encrypted_totp_secret TEXT NOT NULL,
+  is_initialized BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE admin_security ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all read" ON admin_security FOR SELECT USING (true);
+CREATE POLICY "Allow all write" ON admin_security FOR ALL USING (true) WITH CHECK (true);
+

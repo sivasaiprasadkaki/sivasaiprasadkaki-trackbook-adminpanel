@@ -13,6 +13,8 @@ import {
 } from 'lucide-react';
 import { Cashbook } from '../types';
 
+const fetch = (input: RequestInfo | URL, init?: RequestInit) => window.fetch(input, { ...init, credentials: 'include' });
+
 interface CashbooksViewProps {
   onAddCashbook?: () => void;
 }

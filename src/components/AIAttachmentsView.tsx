@@ -30,6 +30,8 @@ import {
   Database
 } from 'lucide-react';
 
+const fetch = (input: RequestInfo | URL, init?: RequestInit) => window.fetch(input, { ...init, credentials: 'include' });
+
 interface CloudFile {
   public_id: string;
   filename: string;

@@ -13,6 +13,8 @@ import {
   HelpCircle
 } from 'lucide-react';
 
+const fetch = (input: RequestInfo | URL, init?: RequestInit) => window.fetch(input, { ...init, credentials: 'include' });
+
 interface SettingsViewProps {
   onResetDatabase: () => void;
 }

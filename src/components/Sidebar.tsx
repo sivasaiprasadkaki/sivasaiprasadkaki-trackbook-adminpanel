@@ -7,15 +7,17 @@ import {
   Paperclip,
   Cloud,
   Settings,
-  BookOpenText
+  BookOpenText,
+  LogOut
 } from 'lucide-react';
 
 interface SidebarProps {
   currentTab: string;
   onTabChange?: (tab: string) => void;
+  onLogout?: () => void;
 }
 
-export default function Sidebar({ currentTab, onTabChange }: SidebarProps) {
+export default function Sidebar({ currentTab, onTabChange, onLogout }: SidebarProps) {
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'users', label: 'Users', icon: Users },
@@ -63,8 +65,8 @@ export default function Sidebar({ currentTab, onTabChange }: SidebarProps) {
         })}
       </div>
 
-      {/* Bottom Settings Link */}
-      <div className="px-4 pt-4 border-t border-slate-100">
+      {/* Bottom Settings & Logout Links */}
+      <div className="px-4 pt-4 border-t border-slate-100 space-y-1">
         <Link
           to="/settings"
           onClick={() => onTabChange && onTabChange('settings')}
@@ -79,6 +81,14 @@ export default function Sidebar({ currentTab, onTabChange }: SidebarProps) {
           }`} />
           <span>Settings</span>
         </Link>
+
+        <button
+          onClick={() => onLogout && onLogout()}
+          className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-150 ease-in-out text-rose-600 hover:bg-rose-50 hover:text-rose-700 group cursor-pointer"
+        >
+          <LogOut className="w-5 h-5 text-rose-400 group-hover:text-rose-600 transition-colors" />
+          <span>Log Out</span>
+        </button>
       </div>
     </nav>
   );

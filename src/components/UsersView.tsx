@@ -16,6 +16,8 @@ import {
 } from 'lucide-react';
 import { User } from '../types';
 
+const fetch = (input: RequestInfo | URL, init?: RequestInit) => window.fetch(input, { ...init, credentials: 'include' });
+
 interface UsersViewProps {
   onRefreshStats?: () => void;
 }

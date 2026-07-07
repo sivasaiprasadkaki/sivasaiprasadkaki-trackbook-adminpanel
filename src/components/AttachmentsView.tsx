@@ -29,6 +29,8 @@ import {
 } from 'lucide-react';
 import { AuditAttachment, Cashbook, User as AppUser, Entry } from '../types';
 
+const fetch = (input: RequestInfo | URL, init?: RequestInit) => window.fetch(input, { ...init, credentials: 'include' });
+
 export default function AttachmentsView() {
   // Directory Lists
   const [users, setUsers] = useState<AppUser[]>([]);

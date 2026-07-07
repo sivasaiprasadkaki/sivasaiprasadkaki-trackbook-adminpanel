@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { Entry, DashboardStats } from '../types';
 
+const fetch = (input: RequestInfo | URL, init?: RequestInit) => window.fetch(input, { ...init, credentials: 'include' });
+
 interface DashboardViewProps {
   entries: Entry[];
   onAddEntryClick: () => void;
