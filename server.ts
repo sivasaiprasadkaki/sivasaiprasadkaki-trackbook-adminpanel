@@ -9,6 +9,12 @@ import { User, Entry, Cashbook, Attachment, Receipt, DashboardStats } from './sr
 
 dotenv.config();
 
+// Ensure SUPABASE_SERVICE_ROLE_KEY is present
+if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  console.error("ERROR: Missing SUPABASE_SERVICE_ROLE_KEY");
+  process.exit(1);
+}
+
 // Configure Cloudinary safely
 let isCloudinaryConfigured = false;
 const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
@@ -56,7 +62,7 @@ let supabaseAdminClient: any = null;
 function getSupabaseAdmin() {
   if (!supabaseAdminClient) {
     const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
     console.log(`[DEBUG] Initializing Supabase Admin Client. URL defined: ${!!url}, Service Role Key defined: ${!!key}`);
     if (url && key) {
       supabaseAdminClient = createClient(url, key, {
@@ -71,6 +77,71 @@ function getSupabaseAdmin() {
   }
   return supabaseAdminClient;
 }
+
+async function runStartupVerification() {
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const isServiceRoleLoaded = !!serviceRoleKey;
+  console.log(`Service Role Loaded: ${isServiceRoleLoaded ? 'YES' : 'NO'}`);
+  
+  if (!isServiceRoleLoaded) {
+    console.error("ERROR: Missing SUPABASE_SERVICE_ROLE_KEY");
+    process.exit(1);
+  }
+
+  const adminClient = getSupabaseAdmin();
+  console.log(`Admin Client Initialized: ${!!adminClient ? 'YES' : 'NO'}`);
+
+  if (!adminClient) {
+    console.error("ERROR: Could not initialize Admin Client.");
+    process.exit(1);
+  }
+
+  // 1. Dashboard Query
+  try {
+    const { count, error } = await adminClient.from('entries').select('id', { count: 'exact', head: true });
+    if (error) throw error;
+    console.log("Dashboard Query: SUCCESS");
+  } catch (err: any) {
+    console.log(`Dashboard Query: FAILED (${err.message})`);
+  }
+
+  // 2. Users Query
+  try {
+    const { error } = await adminClient.from('users').select('id', { count: 'exact', head: true });
+    if (error) throw error;
+    console.log("Users Query: SUCCESS");
+  } catch (err: any) {
+    console.log(`Users Query: FAILED (${err.message})`);
+  }
+
+  // 3. Cashbooks Query
+  try {
+    const { error } = await adminClient.from('cashbooks').select('id', { count: 'exact', head: true });
+    if (error) throw error;
+    console.log("Cashbooks Query: SUCCESS");
+  } catch (err: any) {
+    console.log(`Cashbooks Query: FAILED (${err.message})`);
+  }
+
+  // 4. Entries Query
+  try {
+    const { error } = await adminClient.from('entries').select('id', { count: 'exact', head: true });
+    if (error) throw error;
+    console.log("Entries Query: SUCCESS");
+  } catch (err: any) {
+    console.log(`Entries Query: FAILED (${err.message})`);
+  }
+
+  // 5. Attachments Query
+  try {
+    const { error } = await adminClient.from('attachments').select('id', { count: 'exact', head: true });
+    if (error) throw error;
+    console.log("Attachments Query: SUCCESS");
+  } catch (err: any) {
+    console.log(`Attachments Query: FAILED (${err.message})`);
+  }
+}
+
 
 function parseUserStatus(dbStatus: string | null, lastSignInAt: string | null) {
   let status = 'Active';
@@ -125,10 +196,9 @@ if (process.env.GEMINI_API_KEY) {
 // Stats
 app.get('/api/stats', async (req, res) => {
   console.log('[DEBUG] Dashboard query started...');
-  const adminClient = getSupabaseAdmin();
-  const supabase = adminClient || getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
-    console.error('[DEBUG] Dashboard query failed: Supabase client is missing.');
+    console.error('[DEBUG] Dashboard query failed: Supabase admin client is missing.');
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
 
@@ -147,9 +217,9 @@ app.get('/api/stats', async (req, res) => {
     // Fetch auth users if possible to merge last_sign_in_at and compute actual total users
     let authUsersMap = new Map<string, any>();
     let authUsersList: any[] = [];
-    if (adminClient) {
+    if (supabase) {
       try {
-        const { data: authData } = await adminClient.auth.admin.listUsers();
+        const { data: authData } = await supabase.auth.admin.listUsers();
         if (authData && authData.users) {
           authUsersList = authData.users;
           authData.users.forEach((u: any) => {
@@ -257,9 +327,47 @@ app.get('/api/stats', async (req, res) => {
 
     const totalFiles = (attCount || 0) + (aiAttCount || 0) + imageCount;
     // 1.2 MB per attachment estimate mapped to GB
-    const storageUsedGB = Number(((totalFiles * 1.2 * 1024 * 1024) / (1024 * 1024 * 1024)).toFixed(3));
+    let storageUsedGB = Number(((totalFiles * 1.2 * 1024 * 1024) / (1024 * 1024 * 1024)).toFixed(3));
+    let storageLimitGB = 25; // Cloudinary free tier gives 25 GB limit
 
-    console.log(`[DEBUG] Dashboard query completed - Users: ${totalUsers}, Entries: ${entriesCount}, Total Files: ${totalFiles}, Storage: ${storageUsedGB} GB`);
+    if (isCloudinaryConfigured) {
+      try {
+        const usage = await cloudinary.api.usage();
+        if (usage) {
+          if (usage.credits) {
+            storageUsedGB = usage.credits.usage || 0;
+            storageLimitGB = usage.credits.limit || 25;
+            console.log(`[DEBUG] Fetched real Cloudinary Credits usage: ${storageUsedGB} / ${storageLimitGB}`);
+          } else if (usage.storage) {
+            const bytes = usage.storage.usage || 0;
+            storageUsedGB = Number((bytes / (1024 * 1024 * 1024)).toFixed(6)); // fallback high precision
+            console.log(`[DEBUG] Fetched real Cloudinary storage fallback: ${bytes} bytes (${storageUsedGB} GB)`);
+          }
+        }
+      } catch (err: any) {
+        console.error('Failed to fetch real-time Cloudinary storage usage:', err.message);
+      }
+    }
+
+    // AI processed count: entries with user_name = 'AI Scanner' or aiAttCount
+    let aiProcessed = 0;
+    try {
+      const { count: aiCount, error: aiCountErr } = await supabase
+        .from('entries')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_name', 'AI Scanner');
+      if (!aiCountErr && aiCount !== null) {
+        aiProcessed = aiCount;
+      } else {
+        aiProcessed = aiAttCount || 0;
+      }
+    } catch (e) {
+      aiProcessed = aiAttCount || 0;
+    }
+
+    const manualProcessed = Math.max(0, (entriesCount || 0) - aiProcessed);
+
+    console.log(`[DEBUG] Dashboard query completed - Users: ${totalUsers}, Entries: ${entriesCount}, Total Files: ${totalFiles}, Storage: ${storageUsedGB} GB, AI: ${aiProcessed}, Manual: ${manualProcessed}`);
 
     res.json({
       totalUsers: totalUsers,
@@ -268,8 +376,10 @@ app.get('/api/stats', async (req, res) => {
       totalEntries: entriesCount || 0,
       totalRevenue: totalVolume,
       accuracy: 98,
-      storageUsed: Math.max(0.01, storageUsedGB),
-      storageLimit: 100,
+      storageUsed: Math.max(0.001, storageUsedGB),
+      storageLimit: storageLimitGB,
+      aiProcessed: aiProcessed,
+      manualProcessed: manualProcessed,
       supabaseConfigured: true,
       schemaMissing: false
     });
@@ -282,28 +392,25 @@ app.get('/api/stats', async (req, res) => {
 // Users
 app.get('/api/users', async (req, res) => {
   console.log('[DEBUG] Users load started...');
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
-    console.error('[DEBUG] Users load failed: Supabase client is missing.');
+    console.error('[DEBUG] Users load failed: Supabase admin client is missing.');
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
 
   try {
     let authUsers: any[] = [];
-    const adminClient = getSupabaseAdmin();
 
-    // 1. Fetch users from Supabase Auth if service role key is available
-    if (adminClient) {
-      try {
-        const { data: authData, error: authErr } = await adminClient.auth.admin.listUsers();
-        if (authErr) {
-          console.error('Error listing auth users via service_role:', authErr.message);
-        } else if (authData && authData.users) {
-          authUsers = authData.users;
-        }
-      } catch (e: any) {
-        console.error('Exception listing auth users:', e.message);
+    // 1. Fetch users from Supabase Auth
+    try {
+      const { data: authData, error: authErr } = await supabase.auth.admin.listUsers();
+      if (authErr) {
+        console.error('Error listing auth users via service_role:', authErr.message);
+      } else if (authData && authData.users) {
+        authUsers = authData.users;
       }
+    } catch (e: any) {
+      console.error('Exception listing auth users:', e.message);
     }
 
     // 2. Fetch public users table as well to merge profiles/status/metadata
@@ -492,7 +599,7 @@ app.get('/api/users', async (req, res) => {
 
 app.post('/api/users/presence', async (req, res) => {
   const { email, id } = req.body;
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
@@ -552,8 +659,7 @@ app.post('/api/users', async (req, res) => {
     return res.status(400).json({ error: 'Missing required field: email' });
   }
 
-  const supabase = getSupabase();
-  const adminClient = getSupabaseAdmin();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
@@ -561,10 +667,10 @@ app.post('/api/users', async (req, res) => {
   try {
     let id = `u-${Date.now()}`;
 
-    // Create user in Supabase Auth if admin client is available
-    if (adminClient) {
+    // Create user in Supabase Auth
+    if (supabase) {
       try {
-        const { data: authData, error: authErr } = await adminClient.auth.admin.createUser({
+        const { data: authData, error: authErr } = await supabase.auth.admin.createUser({
           email,
           phone: phone || undefined,
           email_confirm: true,
@@ -619,16 +725,15 @@ app.post('/api/users', async (req, res) => {
 app.put('/api/users/:id', async (req, res) => {
   const { id } = req.params;
   const { email, role, status, name, phone } = req.body;
-  const supabase = getSupabase();
-  const adminClient = getSupabaseAdmin();
+  const supabase = getSupabaseAdmin();
 
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
 
   try {
-    // 1. Update auth.users if admin client is available
-    if (adminClient) {
+    // 1. Update auth.users
+    if (supabase) {
       try {
         const updateObj: any = {};
         if (email) updateObj.email = email;
@@ -639,7 +744,7 @@ app.put('/api/users/:id', async (req, res) => {
             role: role
           };
         }
-        await adminClient.auth.admin.updateUserById(id, updateObj);
+        await supabase.auth.admin.updateUserById(id, updateObj);
       } catch (e: any) {
         console.error('Error updating auth user metadata:', e.message);
       }
@@ -680,18 +785,17 @@ app.put('/api/users/:id', async (req, res) => {
 
 app.delete('/api/users/:id', async (req, res) => {
   const { id } = req.params;
-  const supabase = getSupabase();
-  const adminClient = getSupabaseAdmin();
+  const supabase = getSupabaseAdmin();
 
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
 
   try {
-    // 1. Delete auth user if admin client is available
-    if (adminClient) {
+    // 1. Delete auth user
+    if (supabase) {
       try {
-        await adminClient.auth.admin.deleteUser(id);
+        await supabase.auth.admin.deleteUser(id);
       } catch (e: any) {
         console.error('Error deleting auth user:', e.message);
       }
@@ -714,10 +818,9 @@ app.delete('/api/users/:id', async (req, res) => {
 // Cashbooks
 app.get('/api/cashbooks', async (req, res) => {
   console.log('[DEBUG] Cashbooks loaded started...');
-  const adminClient = getSupabaseAdmin();
-  const supabase = adminClient || getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
-    console.error('[DEBUG] Cashbooks load failed: Supabase client is missing.');
+    console.error('[DEBUG] Cashbooks load failed: Supabase admin client is missing.');
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
 
@@ -739,9 +842,9 @@ app.get('/api/cashbooks', async (req, res) => {
 
     // Fetch users & profiles to resolve owners
     let authUsers: any[] = [];
-    if (adminClient) {
+    if (supabase) {
       try {
-        const { data: authData } = await adminClient.auth.admin.listUsers();
+        const { data: authData } = await supabase.auth.admin.listUsers();
         if (authData && authData.users) {
           authUsers = authData.users;
         }
@@ -904,8 +1007,7 @@ app.post('/api/cashbooks', async (req, res) => {
     return res.status(400).json({ error: 'Missing required fields: name' });
   }
 
-  const adminClient = getSupabaseAdmin();
-  const supabase = adminClient || getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
@@ -947,10 +1049,9 @@ app.post('/api/cashbooks', async (req, res) => {
 // Entries
 app.get('/api/entries', async (req, res) => {
   console.log('[DEBUG] Entries load started...');
-  const adminClient = getSupabaseAdmin();
-  const supabase = adminClient || getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
-    console.error('[DEBUG] Entries load failed: Supabase client is missing.');
+    console.error('[DEBUG] Entries load failed: Supabase admin client is missing.');
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
 
@@ -1080,8 +1181,7 @@ app.post('/api/entries', async (req, res) => {
     return res.status(400).json({ error: 'Missing required field: amount' });
   }
 
-  const adminClient = getSupabaseAdmin();
-  const supabase = adminClient || getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
@@ -1140,8 +1240,7 @@ app.post('/api/entries', async (req, res) => {
 
 app.delete('/api/entries/:id', async (req, res) => {
   const { id } = req.params;
-  const adminClient = getSupabaseAdmin();
-  const supabase = adminClient || getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
@@ -1163,8 +1262,7 @@ app.delete('/api/entries/:id', async (req, res) => {
 
 // Attachments
 app.get('/api/attachments', async (req, res) => {
-  const adminClient = getSupabaseAdmin();
-  const supabase = adminClient || getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
@@ -1411,8 +1509,7 @@ app.get('/api/attachments', async (req, res) => {
 
 app.delete('/api/attachments/:id', async (req, res) => {
   const { id } = req.params;
-  const adminClient = getSupabaseAdmin();
-  const supabase = adminClient || getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
@@ -1455,7 +1552,7 @@ app.post('/api/attachments', async (req, res) => {
     return res.status(400).json({ error: 'Missing field: fileType' });
   }
 
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
@@ -1490,7 +1587,7 @@ app.post('/api/attachments', async (req, res) => {
 
 // Receipts (AI Attachments)
 app.get('/api/receipts', async (req, res) => {
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
@@ -1547,7 +1644,7 @@ app.post('/api/process-receipt', async (req, res) => {
     imageUrl: imageBase64.startsWith('data:') ? imageBase64 : `data:${realMimeType};base64,${cleanBase64}`
   };
 
-  const supabase = getSupabase();
+  const supabase = getSupabaseAdmin();
   if (!supabase) {
     return res.status(500).json({ error: 'Supabase configuration is missing.' });
   }
@@ -1829,6 +1926,8 @@ app.post('/api/reset', async (req, res) => {
 
 // Configure Vite middleware or static serving
 async function startServer() {
+  await runStartupVerification();
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

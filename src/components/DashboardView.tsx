@@ -31,7 +31,9 @@ export default function DashboardView({ entries, onAddEntryClick, onNavigateToTa
     totalRevenue: 0,
     accuracy: 0,
     storageUsed: 0,
-    storageLimit: 100
+    storageLimit: 100,
+    aiProcessed: 0,
+    manualProcessed: 0
   });
 
   const [loading, setLoading] = useState(false);
@@ -64,6 +66,19 @@ export default function DashboardView({ entries, onAddEntryClick, onNavigateToTa
       currency: 'INR',
       maximumFractionDigits: 0
     }).format(value);
+  };
+
+  // Format storage size based on user preference (e.g., 0.800 GB for <1GB, and 1.2, 1.02, 1.67 for >=1GB)
+  const formatStorage = (gbValue: number) => {
+    if (gbValue < 1) {
+      return gbValue.toFixed(3);
+    } else {
+      const formatted = gbValue.toFixed(2);
+      if (formatted.endsWith('0') && !formatted.endsWith('.00')) {
+        return gbValue.toFixed(1);
+      }
+      return formatted;
+    }
   };
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -248,7 +263,7 @@ export default function DashboardView({ entries, onAddEntryClick, onNavigateToTa
             </div>
           </div>
           <div className="text-2xl font-bold text-slate-900 tracking-tight">
-            {(stats.totalEntries / 1000).toFixed(0)}k
+            {stats.totalEntries.toLocaleString('en-IN')}
           </div>
           <div className="flex items-center gap-1.5 mt-2 text-xs">
             <span className="bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-medium flex items-center gap-0.5">
@@ -486,7 +501,7 @@ export default function DashboardView({ entries, onAddEntryClick, onNavigateToTa
                   strokeWidth="12"
                   fill="transparent"
                 />
-                {/* Accuracy segment representing 85% */}
+                {/* Accuracy segment representing dynamic accuracy */}
                 <circle
                   cx="60"
                   cy="60"
@@ -495,7 +510,7 @@ export default function DashboardView({ entries, onAddEntryClick, onNavigateToTa
                   strokeWidth="12"
                   fill="transparent"
                   strokeDasharray={`${2 * Math.PI * 50}`}
-                  strokeDashoffset={`${2 * Math.PI * 50 * (1 - 0.85)}`}
+                  strokeDashoffset={`${2 * Math.PI * 50 * (1 - (stats.accuracy || 98) / 100)}`}
                   className="transition-all duration-1000 ease-out"
                 />
               </svg>
@@ -514,7 +529,7 @@ export default function DashboardView({ entries, onAddEntryClick, onNavigateToTa
                   <span>Auto-Categorized</span>
                 </span>
                 <span className="font-semibold text-slate-800">
-                  {stats.totalUsers.toLocaleString('en-IN')}
+                  {(stats.aiProcessed ?? 0).toLocaleString('en-IN')}
                 </span>
               </div>
               <div className="flex justify-between items-center text-sm">
@@ -523,7 +538,7 @@ export default function DashboardView({ entries, onAddEntryClick, onNavigateToTa
                   <span>Manual Review</span>
                 </span>
                 <span className="font-semibold text-slate-800">
-                  2,100
+                  {(stats.manualProcessed ?? 0).toLocaleString('en-IN')}
                 </span>
               </div>
             </div>
@@ -538,7 +553,7 @@ export default function DashboardView({ entries, onAddEntryClick, onNavigateToTa
 
             <div className="mb-4">
               <div className="flex justify-between items-end mb-2">
-                <span className="text-2xl font-bold text-slate-900 tracking-tight">{stats.storageUsed} GB</span>
+                <span className="text-2xl font-bold text-slate-900 tracking-tight">{formatStorage(stats.storageUsed)} GB</span>
                 <span className="text-slate-500 text-xs">/ {stats.storageLimit} GB</span>
               </div>
               

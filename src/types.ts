@@ -96,4 +96,6 @@ export interface DashboardStats {
   storageLimit: number; // in GB
   supabaseConfigured?: boolean;
   schemaMissing?: boolean;
+  aiProcessed?: number;
+  manualProcessed?: number;
 }
