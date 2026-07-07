@@ -34,7 +34,7 @@ if (cloudName && apiKey && apiSecret) {
   console.warn('Cloudinary credentials missing in environment.');
 }
 
-const app = express();
+export const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '15mb' }));
@@ -1947,4 +1947,6 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
