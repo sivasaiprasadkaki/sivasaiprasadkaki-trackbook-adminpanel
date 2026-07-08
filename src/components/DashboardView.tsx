@@ -84,7 +84,7 @@ export default function DashboardView({ entries, onAddEntryClick, onNavigateToTa
   };
 
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 5;
+  const itemsPerPage = 10;
 
   // Reset page when search query changes
   useEffect(() => {

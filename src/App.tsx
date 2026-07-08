@@ -10,6 +10,7 @@ import AttachmentsView from './components/AttachmentsView';
 import AIAttachmentsView from './components/AIAttachmentsView';
 import SettingsView from './components/SettingsView';
 import AdminAuth from './components/AdminAuth';
+import SplashScreen from './components/SplashScreen';
 import { Entry } from './types';
 import { RefreshCw } from 'lucide-react';
 
@@ -22,6 +23,9 @@ export default function App() {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchValue, setSearchValue] = useState('');
+  const [showSplash, setShowSplash] = useState<boolean>(() => {
+    return sessionStorage.getItem('loginSuccessSplash') === 'true';
+  });
 
   // Check initial authentication state
   useEffect(() => {
@@ -59,10 +63,15 @@ export default function App() {
 
   // Validate and redirect routes to /dashboard if necessary
   useEffect(() => {
-    if (isAuthenticated === false) return; // don't redirect when in auth screen
+    if (isAuthenticated === false) {
+      if (location.pathname !== '/login') {
+        navigate('/login', { replace: true });
+      }
+      return;
+    }
     const validTabs = ['dashboard', 'users', 'cashbooks', 'entries', 'attachments', 'cloud', 'settings'];
     const tab = location.pathname.replace(/^\//, '');
-    if (location.pathname === '/' || location.pathname === '') {
+    if (location.pathname === '/' || location.pathname === '' || location.pathname === '/login') {
       navigate('/dashboard', { replace: true });
     } else if (!validTabs.includes(tab)) {
       navigate('/dashboard', { replace: true });
@@ -148,6 +157,7 @@ export default function App() {
     try {
       const res = await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
       if (res.ok) {
+        localStorage.removeItem('trackbook_session');
         setIsAuthenticated(false);
         navigate('/dashboard', { replace: true });
       }
@@ -218,9 +228,34 @@ export default function App() {
     );
   }
 
+  // If splash flag is set, show the beautiful post-login splash screen
+  if (showSplash) {
+    return (
+      <SplashScreen
+        onComplete={() => {
+          sessionStorage.removeItem('loginSuccessSplash');
+          setShowSplash(false);
+          navigate('/dashboard', { replace: true });
+        }}
+      />
+    );
+  }
+
   // If unauthenticated, display the TrackBook custom verification / setup screen
   if (isAuthenticated === false) {
-    return <AdminAuth onSuccess={() => setIsAuthenticated(true)} initialIsInitialized={isInitialized} />;
+    return (
+      <AdminAuth
+        onSuccess={(isExplicitLogin) => {
+          if (isExplicitLogin) {
+            sessionStorage.setItem('loginSuccessSplash', 'true');
+            setShowSplash(true);
+          }
+          setIsInitialized(true);
+          setIsAuthenticated(true);
+        }}
+        initialIsInitialized={isInitialized}
+      />
+    );
   }
 
   return (

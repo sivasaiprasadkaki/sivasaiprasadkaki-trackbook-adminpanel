@@ -90,14 +90,57 @@ CREATE POLICY "Allow all write" ON receipts FOR ALL USING (true) WITH CHECK (tru
 
 -- 6. Create Admin Security Table for TOTP
 CREATE TABLE IF NOT EXISTS admin_security (
-  id TEXT PRIMARY KEY,
-  encrypted_totp_secret TEXT NOT NULL,
+  id UUID PRIMARY KEY CONSTRAINT only_one_admin_id CHECK (id = '00000000-0000-0000-0000-000000000001'),
+  encrypted_secret TEXT NOT NULL,
   is_initialized BOOLEAN NOT NULL DEFAULT FALSE,
+  failed_attempts INTEGER DEFAULT 0,
+  locked_until TIMESTAMPTZ,
+  last_login_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Enable Row Level Security (RLS) to block anonymous or authenticated frontend users
 ALTER TABLE admin_security ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow all read" ON admin_security FOR SELECT USING (true);
-CREATE POLICY "Allow all write" ON admin_security FOR ALL USING (true) WITH CHECK (true);
+
+-- Note: No policies are created on admin_security, meaning all frontend access via anon/authenticated roles is denied. Only service role (backend) access is allowed.
+
+-- Create updated_at trigger
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_admin_security_updated_at
+    BEFORE UPDATE ON admin_security
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- 7. Create Admin Users Table (Username + Password)
+CREATE TABLE IF NOT EXISTS admin_users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  full_name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'super_admin',
+  status TEXT NOT NULL DEFAULT 'active',
+  last_login_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enable Row Level Security (RLS) to secure the admin_users table from direct public queries
+ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
+
+-- No policies are created on admin_users, so all anonymous/authenticated frontend access is blocked. Only service role (backend) can query this.
+
+-- Create updated_at trigger for admin_users
+CREATE TRIGGER update_admin_users_updated_at
+    BEFORE UPDATE ON admin_users
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
 

@@ -3,12 +3,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import fs from 'fs';
-import { TOTP } from 'otplib';
-import { crypto as nobleCrypto } from '@otplib/plugin-crypto-noble';
-import { base32 as scureBase32 } from '@otplib/plugin-base32-scure';
-
-const totp = new TOTP({ crypto: nobleCrypto, base32: scureBase32 });
-import QRCode from 'qrcode';
+import bcrypt from 'bcryptjs';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
 import { v2 as cloudinary } from 'cloudinary';
@@ -147,6 +142,109 @@ async function runStartupVerification() {
   } catch (err: any) {
     console.log(`Attachments Query: FAILED (${err.message})`);
   }
+
+  // 6. Admin Users Query & Verification
+  try {
+    console.log("[STARTUP INFO] Verifying admin_users table status in Supabase...");
+    const { count, error } = await adminClient
+      .from('admin_users')
+      .select('id', { count: 'exact', head: true });
+    if (error) {
+      console.warn(`[STARTUP ALERT] admin_users table query failed: ${error.message}`);
+      console.warn(`[STARTUP ACTION REQUIRED] Please execute the SQL migration script from supabase-schema.sql inside your Supabase SQL Editor to create the admin_users table.`);
+    } else {
+      console.log("admin_users Query: SUCCESS");
+      console.log(`[STARTUP INFO] admin_users table is loaded. Current count of admin users: ${count || 0}`);
+    }
+  } catch (err: any) {
+    console.error(`[STARTUP EXCEPTION] Failed to query admin_users: ${err.message}`);
+  }
+
+  // 7. Auto-seed first admin if empty
+  await autoSeedFirstAdmin();
+}
+
+async function autoSeedFirstAdmin() {
+  const adminClient = getSupabaseAdmin();
+  if (!adminClient) {
+    console.error('[AUTO-SEED] Could not initialize Admin Client.');
+    return;
+  }
+
+  try {
+    // Check if any admin users exist in database
+    const { count, error } = await adminClient
+      .from('admin_users')
+      .select('id', { count: 'exact', head: true });
+
+    if (error) {
+      console.warn(`[AUTO-SEED] admin_users table check failed or does not exist: ${error.message}`);
+      // Fallback local JSON file check
+      const fallbackAdmins = readFallbackAdmins();
+      if (fallbackAdmins.length === 0) {
+        const hashedPassword = await bcrypt.hash('Siva@122', 12);
+        const newAdmin = {
+          id: crypto.randomUUID(),
+          username: 'SivasaiPrasad',
+          password_hash: hashedPassword,
+          full_name: 'Siva Sai Prasad',
+          role: 'super_admin',
+          status: 'active',
+          last_login_at: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+        fallbackAdmins.push(newAdmin);
+        writeFallbackAdmins(fallbackAdmins);
+        console.log('[AUTO-SEED SUCCESS] First administrator created successfully.');
+      }
+      return;
+    }
+
+    if (count === 0) {
+      const hashedPassword = await bcrypt.hash('Siva@122', 12);
+      const newAdmin = {
+        id: crypto.randomUUID(),
+        username: 'SivasaiPrasad',
+        password_hash: hashedPassword,
+        full_name: 'Siva Sai Prasad',
+        role: 'super_admin',
+        status: 'active',
+        last_login_at: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+
+      const { data, error: insertError } = await adminClient
+        .from('admin_users')
+        .insert(newAdmin)
+        .select();
+
+      if (insertError) {
+        console.error(`[AUTO-SEED ERROR] Failed to insert first Super Admin: ${insertError.message}`);
+      } else {
+        console.log('[AUTO-SEED SUCCESS] First administrator created successfully.');
+      }
+
+      // Sync fallback JSON file
+      const fallbackAdmins = readFallbackAdmins();
+      if (fallbackAdmins.length === 0) {
+        fallbackAdmins.push(newAdmin);
+        writeFallbackAdmins(fallbackAdmins);
+      }
+    }
+
+    // Verify exactly one administrator exists
+    const { count: verifyCount } = await adminClient
+      .from('admin_users')
+      .select('id', { count: 'exact', head: true });
+    
+    if (verifyCount === 1) {
+      console.log('[AUTO-SEED VERIFICATION] Verified exactly one administrator exists in database.');
+    }
+  } catch (err: any) {
+    console.error(`[AUTO-SEED EXCEPTION] Error during auto-seeding first admin: ${err.message}`);
+  }
 }
 
 
@@ -248,6 +346,32 @@ function parseCookies(cookieHeader?: string): Record<string, string> {
   return list;
 }
 
+function getSessionToken(req: any): string | null {
+  // 1. Try reading from cookie
+  const cookies = parseCookies(req.headers.cookie);
+  if (cookies['trackbook_session']) {
+    return cookies['trackbook_session'];
+  }
+
+  // 2. Try reading from Authorization header (Bearer <token> or <token>)
+  const authHeader = req.headers['authorization'];
+  if (authHeader) {
+    const parts = authHeader.split(' ');
+    if (parts.length === 2 && parts[0].toLowerCase() === 'bearer') {
+      return parts[1];
+    }
+    return authHeader; // fallback to raw header value
+  }
+
+  // 3. Try reading from custom headers
+  const customHeader = req.headers['x-trackbook-session'] || req.headers['x-session-token'];
+  if (customHeader) {
+    return Array.isArray(customHeader) ? customHeader[0] : customHeader;
+  }
+
+  return null;
+}
+
 function getSessionCookieAttributes(req: any, maxAge = 24 * 60 * 60) {
   const isProd = process.env.NODE_ENV === 'production';
   const host = req.headers.host || '';
@@ -269,379 +393,324 @@ function getSessionCookieAttributes(req: any, maxAge = 24 * 60 * 60) {
   return `Path=/; HttpOnly; Max-Age=${maxAge}; SameSite=Lax${secureFlag}`;
 }
 
-const FALLBACK_PATH = './admin_security_fallback.json';
+// ------------------------------------------------------------------------
+// USERNAME + PASSWORD AUTHENTICATION ENGINE
+// ------------------------------------------------------------------------
 
-function readFallback(): { encrypted_totp_secret: string; is_initialized: boolean } | null {
+const FALLBACK_ADMIN_FILE = path.join(process.cwd(), 'admin_users_fallback.json');
+
+interface FallbackAdmin {
+  id: string;
+  username: string;
+  password_hash: string;
+  full_name: string;
+  role: string;
+  status: string;
+  last_login_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function readFallbackAdmins(): FallbackAdmin[] {
   try {
-    if (fs.existsSync(FALLBACK_PATH)) {
-      const data = fs.readFileSync(FALLBACK_PATH, 'utf8');
-      return JSON.parse(data);
+    if (fs.existsSync(FALLBACK_ADMIN_FILE)) {
+      const content = fs.readFileSync(FALLBACK_ADMIN_FILE, 'utf8');
+      return JSON.parse(content);
     }
   } catch (err) {
-    console.error('Failed to read fallback security:', err);
+    console.error('[FALLBACK AUTH] Failed to read fallback admin file:', err);
   }
-  return null;
+  return [];
 }
 
-function writeFallback(encrypted_totp_secret: string, is_initialized: boolean) {
+function writeFallbackAdmins(admins: FallbackAdmin[]) {
   try {
-    fs.writeFileSync(FALLBACK_PATH, JSON.stringify({ encrypted_totp_secret, is_initialized }), 'utf8');
+    fs.writeFileSync(FALLBACK_ADMIN_FILE, JSON.stringify(admins, null, 2), 'utf8');
   } catch (err) {
-    console.error('Failed to write fallback security:', err);
+    console.error('[FALLBACK AUTH] Failed to write fallback admin file:', err);
   }
 }
 
-async function getAdminSecurity(): Promise<{ encrypted_totp_secret: string | null; is_initialized: boolean }> {
+async function getAdminUserByUsername(username: string): Promise<FallbackAdmin | null> {
   const adminClient = getSupabaseAdmin();
   if (adminClient) {
     try {
-      const { data, error } = await adminClient.from('admin_security').select('*').eq('id', 'admin');
+      const { data, error } = await adminClient
+        .from('admin_users')
+        .select('*')
+        .eq('username', username);
+      
       if (!error && data && data.length > 0) {
-        console.log(`[DEBUG] getAdminSecurity: Loaded from DATABASE. is_initialized=${data[0].is_initialized}`);
-        return {
-          encrypted_totp_secret: data[0].encrypted_totp_secret,
-          is_initialized: data[0].is_initialized
-        };
-      } else if (error) {
-        if (error.message && error.message.includes('Could not find the table')) {
-          console.log('[DEBUG] admin_security table is not present in Supabase. Using robust local fallback file security system.');
-        } else {
-          console.warn('[DB WARNING] admin_security read error:', error.message);
-        }
+        return data[0];
+      }
+      if (error && error.code !== 'PGRST205') {
+        console.warn('[DB WARNING] admin_users query error:', error.message);
       }
     } catch (err: any) {
-      console.warn('[DB WARNING] admin_security read exception:', err.message);
+      console.warn('[DB WARNING] admin_users query exception:', err.message);
     }
   }
 
-  // Fallback to local file if DB query fails or has no record
-  const fallback = readFallback();
-  if (fallback) {
-    console.log(`[DEBUG] getAdminSecurity: Loaded from FALLBACK FILE. is_initialized=${fallback.is_initialized}`);
-    return {
-      encrypted_totp_secret: fallback.encrypted_totp_secret,
-      is_initialized: fallback.is_initialized
-    };
-  }
-
-  console.log('[DEBUG] getAdminSecurity: No record found anywhere. is_initialized=false');
-  return { encrypted_totp_secret: null, is_initialized: false };
+  // Fallback to local JSON file
+  console.log('[FALLBACK AUTH] Supabase admin_users query failed or table not found. Using local JSON fallback.');
+  const admins = readFallbackAdmins();
+  const match = admins.find(a => a.username.toLowerCase() === username.toLowerCase());
+  return match || null;
 }
 
-async function saveAdminSecurity(encrypted_secret: string, is_initialized: boolean): Promise<boolean> {
-  // Always save to fallback first
-  writeFallback(encrypted_secret, is_initialized);
-
+async function isAuthInitialized(): Promise<boolean> {
   const adminClient = getSupabaseAdmin();
   if (adminClient) {
     try {
-      const { error } = await adminClient.from('admin_security').upsert({
-        id: 'admin',
-        encrypted_totp_secret: encrypted_secret,
-        is_initialized: is_initialized,
-        updated_at: new Date().toISOString()
-      });
-      if (!error) {
-        return true;
+      const { count, error } = await adminClient
+        .from('admin_users')
+        .select('id', { count: 'exact', head: true });
+      if (!error && count !== null) {
+        return count > 0;
       }
-      if (error.message && error.message.includes('Could not find the table')) {
-        console.log('[DEBUG] admin_security table is not present in Supabase. Saved securely to fallback file.');
-      } else {
-        console.error('[DB ERROR] Failed to upsert admin_security:', error.message);
-      }
-    } catch (err: any) {
-      console.error('[DB EXCEPTION] Failed to upsert admin_security:', err.message);
+    } catch (err) {
+      // ignore and let fallback handle
     }
   }
-  return false;
+  const admins = readFallbackAdmins();
+  return admins.length > 0;
 }
 
-async function deleteAdminSecurity(): Promise<boolean> {
-  // Delete the fallback file
-  try {
-    if (fs.existsSync(FALLBACK_PATH)) {
-      fs.unlinkSync(FALLBACK_PATH);
-    }
-  } catch (err) {
-    console.error('Failed to delete fallback security:', err);
-  }
-
-  const adminClient = getSupabaseAdmin();
-  if (adminClient) {
-    try {
-      const { error } = await adminClient.from('admin_security').delete().eq('id', 'admin');
-      if (!error) {
-        return true;
-      }
-      if (error.message && error.message.includes('Could not find the table')) {
-        console.log('[DEBUG] admin_security table is not present in Supabase. Deleted fallback file setup.');
-      } else {
-        console.error('[DB ERROR] Failed to delete admin_security:', error.message);
-      }
-    } catch (err: any) {
-      console.error('[DB EXCEPTION] Failed to delete admin_security:', err.message);
-    }
-  }
-  return true;
-}
-
-const loginAttempts: Record<string, { count: number; lockedUntil: number }> = {};
-const pendingSecrets: Record<string, string> = {};
-
-// Auth Router & endpoints (registered before requireAuth middleware)
 const authRouter = express.Router();
 
 authRouter.get('/session', async (req, res) => {
-  const security = await getAdminSecurity();
-  const cookies = parseCookies(req.headers.cookie);
-  const sessionToken = cookies['trackbook_session'];
+  console.log('[AUTH FLOW] GET /api/auth/session called');
+  console.log('[AUTH FLOW] Raw Cookie Header:', req.headers.cookie);
+  const is_initialized = await isAuthInitialized();
+  const sessionToken = getSessionToken(req);
+  console.log('[AUTH FLOW] Retrieved Session Token:', sessionToken ? '(Token present)' : '(No token)');
   let authenticated = false;
+  let userPayload = null;
 
   if (sessionToken) {
     try {
       const decrypted = decryptSecret(sessionToken);
+      console.log('[AUTH FLOW] Successfully decrypted session token');
       const session = JSON.parse(decrypted);
+      console.log('[AUTH FLOW] Parsed session JSON:', JSON.stringify(session));
       if (session && session.admin && session.expiresAt > Date.now()) {
         authenticated = true;
+        userPayload = session.user;
+        console.log('[AUTH FLOW] Session is VALID. Authenticated user:', session.user.username);
       } else {
-        console.log(`[DEBUG] Session token expired or invalid. Expires at: ${session?.expiresAt}, Now: ${Date.now()}`);
+        if (!session) {
+          console.log('[AUTH FLOW] Session parsing failed or null');
+        } else if (!session.admin) {
+          console.log('[AUTH FLOW] Session admin property is false or missing');
+        } else if (session.expiresAt <= Date.now()) {
+          console.log(`[AUTH FLOW] Session expired. Expires at: ${session.expiresAt}, Now: ${Date.now()}`);
+        }
       }
     } catch (e: any) {
-      console.warn('[DEBUG] Failed to parse/decrypt session token cookie:', e.message);
+      console.warn('[AUTH FLOW] ERROR: Failed to parse/decrypt session token:', e.message);
     }
   } else {
-    console.log('[DEBUG] No trackbook_session cookie found in request.');
+    console.log('[AUTH FLOW] No session token found in request');
   }
-
-  console.log(`[DEBUG] /api/auth/session response: authenticated=${authenticated}, is_initialized=${security.is_initialized}`);
 
   res.json({
     authenticated,
-    is_initialized: security.is_initialized
+    is_initialized,
+    user: userPayload
   });
 });
 
-authRouter.post('/setup', async (req, res) => {
+authRouter.post('/login', async (req, res) => {
+  console.log('[AUTH FLOW] POST /api/auth/login received');
   try {
-    const security = await getAdminSecurity();
-    if (security.is_initialized) {
-      return res.status(400).json({ error: 'Setup already completed' });
+    const { username, password } = req.body;
+    if (!username || !password) {
+      console.log('[AUTH FLOW] Login failed: Username or password missing');
+      return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    // Generate secret
-    const secret = totp.generateSecret();
-    const otpauthUrl = totp.toURI({ label: 'admin@trackbook.xyz', issuer: 'TrackBook Admin', secret });
-    const qrCodeDataUrl = await QRCode.toDataURL(otpauthUrl);
+    console.log('[AUTH FLOW] Searching for admin user:', username);
+    const user = await getAdminUserByUsername(username);
+    if (!user) {
+      console.log('[AUTH FLOW] Login failed: Username not found:', username);
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+    console.log('[AUTH FLOW] Username found, user status:', user.status);
 
-    // 1. In-memory fallback
-    pendingSecrets['admin'] = secret;
+    if (user.status && user.status.toLowerCase() !== 'active') {
+      console.log('[AUTH FLOW] Login failed: Account inactive');
+      return res.status(401).json({ error: 'Account is inactive. Please contact support.' });
+    }
 
-    // 2. Persist in database/fallback file with is_initialized = false
-    const encryptedSecret = encryptSecret(secret);
+    console.log('[AUTH FLOW] Verifying password with bcrypt...');
+    let match = false;
     try {
-      await saveAdminSecurity(encryptedSecret, false);
-      console.log('[AUTH INFO] Pending TOTP secret saved persistently to database/fallback');
-    } catch (dbErr: any) {
-      console.error('[AUTH ERROR] Failed to save pending TOTP secret to database:', dbErr.message);
+      match = await bcrypt.compare(password, user.password_hash);
+    } catch (bcryptErr: any) {
+      console.error('[AUTH FLOW] bcrypt comparison threw error:', bcryptErr.message);
+      return res.status(500).json({ error: 'Internal bcrypt error during password check' });
     }
 
-    // 3. Persist in HttpOnly cookie as client-side isolated session state (30 mins validity)
-    const cookieOptions = getSessionCookieAttributes(req, 30 * 60);
-    res.setHeader('Set-Cookie', `trackbook_pending_setup=${encodeURIComponent(encryptedSecret)}; ${cookieOptions}`);
+    if (!match) {
+      console.log('[AUTH FLOW] Login failed: Password mismatch');
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
+    console.log('[AUTH FLOW] Password verification success');
 
-    res.json({
-      secret,
-      qrCode: qrCodeDataUrl
-    });
-  } catch (err: any) {
-    console.error('Error in auth/setup:', err);
-    res.status(500).json({ error: 'Failed to generate setup QR code' });
-  }
-});
-
-authRouter.post('/verify', async (req, res) => {
-  const { code, isSetup } = req.body;
-  if (!code || typeof code !== 'string' || code.length !== 6) {
-    console.warn('[AUTH FAILURE] Verification code is missing or not 6 digits');
-    return res.status(400).json({ error: 'Verification code must be 6 digits' });
-  }
-
-  const ip = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || 'global').split(',')[0].trim();
-  const now = Date.now();
-  const attempt = loginAttempts[ip] || { count: 0, lockedUntil: 0 };
-
-  if (attempt.lockedUntil > now) {
-    const remainingMin = Math.ceil((attempt.lockedUntil - now) / 60000);
-    console.warn(`[AUTH FAILURE] IP rate-limited: ${ip}`);
-    return res.status(429).json({ error: `Too many failed attempts. Please try again in ${remainingMin} minutes.` });
-  }
-
-  try {
-    let secret = '';
-    const security = await getAdminSecurity();
-
-    if (isSetup) {
-      if (security.is_initialized) {
-        console.warn('[AUTH FAILURE] Setup verification failed: Setup already completed');
-        return res.status(400).json({ error: 'Setup already completed' });
-      }
-
-      // Try reading from cookie first
-      const cookies = parseCookies(req.headers.cookie);
-      const pendingCookie = cookies['trackbook_pending_setup'];
-      if (pendingCookie) {
-        try {
-          const decoded = decodeURIComponent(pendingCookie);
-          secret = decryptSecret(decoded);
-          console.log('[AUTH INFO] Successfully read pending setup secret from cookie');
-        } catch (cookieErr) {
-          console.error('[AUTH FAILURE] Failed to decrypt pending setup cookie:', cookieErr);
-        }
-      }
-
-      // If not found in cookie, try reading from the persistent db/fallback record
-      if (!secret && security.encrypted_totp_secret) {
-        try {
-          secret = decryptSecret(security.encrypted_totp_secret);
-          console.log('[AUTH INFO] Successfully read pending setup secret from persistent database/fallback');
-        } catch (dbReadErr) {
-          console.error('[AUTH FAILURE] Failed to decrypt pending setup from database:', dbReadErr);
-        }
-      }
-
-      // Final fallback to in-memory
-      if (!secret) {
-        secret = pendingSecrets['admin'] || '';
-        if (secret) {
-          console.log('[AUTH INFO] Read pending setup secret from in-memory fallback');
-        }
-      }
-
-      if (!secret) {
-        console.warn('[AUTH FAILURE] Setup verification failed: No pending setup secret found in cookies, database, or memory');
-        return res.status(400).json({ error: 'No pending setup. Please request setup first.' });
-      }
-    } else {
-      if (!security.is_initialized || !security.encrypted_totp_secret) {
-        console.warn('[AUTH FAILURE] Verification failed: System not initialized');
-        return res.status(400).json({ error: 'System not initialized. Please set up first.' });
-      }
+    const nowStr = new Date().toISOString();
+    
+    // Update last_login_at
+    const adminClient = getSupabaseAdmin();
+    let updatedInSupabase = false;
+    if (adminClient) {
       try {
-        secret = decryptSecret(security.encrypted_totp_secret);
-      } catch (decryptErr) {
-        console.error('[AUTH FAILURE] Failed to decrypt stored TOTP secret:', decryptErr);
-        return res.status(500).json({ error: 'Internal error: encryption/decryption failure' });
+        const { error } = await adminClient
+          .from('admin_users')
+          .update({ last_login_at: nowStr, updated_at: nowStr })
+          .eq('id', user.id);
+        if (!error) {
+          updatedInSupabase = true;
+          console.log('[AUTH FLOW] Updated last_login_at in Supabase');
+        } else {
+          console.warn('[AUTH FLOW] Supabase update last_login_at error:', error.message);
+        }
+      } catch (err: any) {
+        console.warn('[AUTH FLOW] Supabase update last_login_at exception:', err.message);
+      }
+    }
+    if (!updatedInSupabase) {
+      const admins = readFallbackAdmins();
+      const matchIndex = admins.findIndex(a => a.id === user.id);
+      if (matchIndex !== -1) {
+        admins[matchIndex].last_login_at = nowStr;
+        admins[matchIndex].updated_at = nowStr;
+        writeFallbackAdmins(admins);
+        console.log('[AUTH FLOW] Updated last_login_at in fallback JSON');
       }
     }
 
-    // Verify code using otplib
-    const verifyResult = await totp.verify(code, { secret });
-    const isValid = verifyResult && verifyResult.valid;
-
-    if (!isValid) {
-      // Record failed attempt
-      attempt.count += 1;
-      console.warn(`[AUTH FAILURE] Invalid TOTP code submitted. Attempt count: ${attempt.count}`);
-      if (attempt.count >= 5) {
-        attempt.lockedUntil = now + 5 * 60 * 1000; // 5 mins lock
-        loginAttempts[ip] = attempt;
-        console.warn(`[AUTH FAILURE] IP locked out: ${ip}`);
-        return res.status(429).json({ error: 'Too many failed attempts. Locked out for 5 minutes.' });
-      }
-      loginAttempts[ip] = attempt;
-      return res.status(400).json({ error: 'Invalid verification code' });
-    }
-
-    // Clear failed attempts on success
-    attempt.count = 0;
-    attempt.lockedUntil = 0;
-    loginAttempts[ip] = attempt;
-
-    if (isSetup) {
-      try {
-        // Encrypt secret and save as permanently initialized
-        const encrypted = encryptSecret(secret);
-        await saveAdminSecurity(encrypted, true);
-        // Clean up memory
-        delete pendingSecrets['admin'];
-        console.log('[AUTH INFO] Setup completed successfully and saved to DB');
-      } catch (saveErr) {
-        console.error('[AUTH FAILURE] Failed to store TOTP secret during setup:', saveErr);
-        return res.status(500).json({ error: 'Internal error: failed to store TOTP secret' });
-      }
-    }
-
-    // Create session payload
     const sessionPayload = {
       admin: true,
+      user: {
+        id: user.id,
+        username: user.username,
+        full_name: user.full_name,
+        role: user.role
+      },
       expiresAt: Date.now() + 24 * 60 * 60 * 1000 // 24 Hours
     };
 
     let encryptedSession = '';
     try {
       encryptedSession = encryptSecret(JSON.stringify(sessionPayload));
-    } catch (encryptErr) {
-      console.error('[AUTH FAILURE] Session creation failed (encryption/decryption failure):', encryptErr);
-      return res.status(500).json({ error: 'Internal error: session creation failed' });
+      console.log('[AUTH FLOW] Session created and encrypted successfully');
+    } catch (encryptErr: any) {
+      console.error('[AUTH FLOW] Session encryption failed:', encryptErr.message);
+      return res.status(500).json({ error: 'Internal error: Session creation failed' });
     }
 
-    // Set cookie
-    try {
-      const sessionCookieOptions = getSessionCookieAttributes(req);
-      const clearPendingCookieOptions = getSessionCookieAttributes(req, 0);
-      res.setHeader('Set-Cookie', [
-        `trackbook_session=${encodeURIComponent(encryptedSession)}; ${sessionCookieOptions}`,
-        `trackbook_pending_setup=; ${clearPendingCookieOptions}`
-      ]);
-    } catch (cookieErr) {
-      console.error('[AUTH FAILURE] Cookie creation failed:', cookieErr);
-      return res.status(500).json({ error: 'Internal error: cookie creation failed' });
-    }
+    const sessionCookieOptions = getSessionCookieAttributes(req);
+    console.log('[AUTH FLOW] Generated Cookie options:', sessionCookieOptions);
+    res.setHeader('Set-Cookie', `trackbook_session=${encodeURIComponent(encryptedSession)}; ${sessionCookieOptions}`);
+    console.log('[AUTH FLOW] Cookie set on response header');
 
-    res.json({ success: true });
+    res.json({
+      success: true,
+      token: encryptedSession,
+      user: {
+        id: user.id,
+        username: user.username,
+        full_name: user.full_name,
+        role: user.role
+      }
+    });
   } catch (err: any) {
-    console.error('[AUTH FAILURE] Unexpected error during verification:', err);
-    res.status(500).json({ error: 'Internal server error during verification' });
+    console.error('[AUTH FLOW] Unhandled exception in login:', err);
+    res.status(500).json({ error: 'Internal server error during login' });
   }
 });
 
 authRouter.post('/logout', (req, res) => {
-  console.log('[DEBUG] /api/auth/logout: Initiating administrator logout. Clearing trackbook_session cookie. No TOTP secret or is_initialized settings are modified.');
   const cookieOptions = getSessionCookieAttributes(req, 0);
   res.setHeader('Set-Cookie', `trackbook_session=; ${cookieOptions}`);
   res.json({ success: true });
 });
 
-authRouter.post('/reset-totp', async (req, res) => {
-  const cookies = parseCookies(req.headers.cookie);
-  const sessionToken = cookies['trackbook_session'];
-  let authenticated = false;
-
-  if (sessionToken) {
-    try {
-      const decrypted = decryptSecret(sessionToken);
-      const session = JSON.parse(decrypted);
-      if (session && session.admin && session.expiresAt > Date.now()) {
-        authenticated = true;
-      }
-    } catch (e) {
-      // Ignored
-    }
-  }
-
-  if (!authenticated) {
-    console.warn('[AUTH FAILURE] Attempted to reset TOTP without an active authenticated session');
-    return res.status(401).json({ error: 'Unauthorized. You must be logged in as an administrator to reset TOTP.' });
-  }
-
+app.post('/api/admin/create-first-admin', async (req, res) => {
   try {
-    await deleteAdminSecurity();
-    delete pendingSecrets['admin'];
-    console.log('[AUTH INFO] TOTP configuration reset successfully.');
-    res.json({ success: true, message: 'Google Authenticator configuration reset successfully.' });
+    const is_initialized = await isAuthInitialized();
+    if (is_initialized) {
+      return res.status(403).json({ error: 'Forbidden: Admin already exists' });
+    }
+
+    const { username, password, full_name } = req.body;
+    if (!username || !password || !full_name) {
+      return res.status(400).json({ error: 'username, password, and full_name are required' });
+    }
+
+    const password_hash = await bcrypt.hash(password, 12);
+    const userId = crypto.randomUUID();
+    const nowStr = new Date().toISOString();
+
+    const newAdmin = {
+      id: userId,
+      username,
+      password_hash,
+      full_name,
+      role: 'super_admin',
+      status: 'active',
+      last_login_at: null,
+      created_at: nowStr,
+      updated_at: nowStr
+    };
+
+    // Try to insert in Supabase first
+    const adminClient = getSupabaseAdmin();
+    let createdInSupabase = false;
+
+    if (adminClient) {
+      try {
+        const { data, error } = await adminClient
+          .from('admin_users')
+          .insert(newAdmin)
+          .select();
+        
+        if (!error && data && data.length > 0) {
+          createdInSupabase = true;
+          console.log('[AUTH SUCCESS] First admin user successfully created in Supabase with 12 salt rounds.');
+        } else if (error) {
+          console.warn('[AUTH WARNING] Supabase insert failed:', error.message);
+        }
+      } catch (err: any) {
+        console.warn('[AUTH WARNING] Supabase insert exception:', err.message);
+      }
+    }
+
+    if (!createdInSupabase) {
+      // Fallback to local JSON file
+      const admins = readFallbackAdmins();
+      if (admins.length > 0) {
+        return res.status(403).json({ error: 'Forbidden: Admin already exists in fallback' });
+      }
+      admins.push(newAdmin);
+      writeFallbackAdmins(admins);
+      console.log('[AUTH SUCCESS] First admin user created in local JSON fallback with 12 salt rounds.');
+    }
+
+    res.json({
+      success: true,
+      message: 'First Super Admin user created successfully!',
+      source: createdInSupabase ? 'Supabase Database' : 'Local Fallback Storage',
+      user: {
+        id: userId,
+        username,
+        full_name,
+        role: 'super_admin'
+      }
+    });
   } catch (err: any) {
-    console.error('[AUTH ERROR] Error resetting TOTP:', err);
-    res.status(500).json({ error: 'Failed to reset Google Authenticator configuration.' });
+    console.error('Error in create-first-admin:', err);
+    res.status(500).json({ error: 'Failed to create first admin: ' + err.message });
   }
 });
 
@@ -654,13 +723,12 @@ function requireAuth(req: any, res: any, next: any) {
     return next();
   }
 
-  // Allow public auth endpoints
-  if (req.path.startsWith('/api/auth/')) {
+  // Allow public auth and first admin creation endpoints
+  if (req.path.startsWith('/api/auth/') || req.path === '/api/admin/create-first-admin') {
     return next();
   }
 
-  const cookies = parseCookies(req.headers.cookie);
-  const sessionToken = cookies['trackbook_session'];
+  const sessionToken = getSessionToken(req);
 
   if (!sessionToken) {
     return res.status(401).json({ error: 'Unauthorized: No active session' });

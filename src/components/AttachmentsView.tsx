@@ -653,16 +653,16 @@ export default function AttachmentsView() {
               </div>
             ) : viewMode === 'list' ? (
               /* List View layout */
-              <div className="overflow-x-auto">
+              <div className="overflow-auto max-h-[500px] relative">
                 <table className="w-full text-left border-collapse font-sans text-xs">
                   <thead>
-                    <tr className="bg-slate-100 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
-                      <th className="px-5 py-3">Attachment</th>
-                      <th className="px-5 py-3">Creator / Owner</th>
-                      <th className="px-5 py-3">Destination Link</th>
-                      <th className="px-5 py-3">Type & Size</th>
-                      <th className="px-5 py-3">Audit Details</th>
-                      <th className="px-5 py-3 text-right">Actions</th>
+                    <tr className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                      <th className="sticky top-0 bg-slate-100 z-10 px-5 py-3 shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Attachment</th>
+                      <th className="sticky top-0 bg-slate-100 z-10 px-5 py-3 shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Creator / Owner</th>
+                      <th className="sticky top-0 bg-slate-100 z-10 px-5 py-3 shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Destination Link</th>
+                      <th className="sticky top-0 bg-slate-100 z-10 px-5 py-3 shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Type & Size</th>
+                      <th className="sticky top-0 bg-slate-100 z-10 px-5 py-3 shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Audit Details</th>
+                      <th className="sticky top-0 bg-slate-100 z-10 px-5 py-3 text-right shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 bg-white">

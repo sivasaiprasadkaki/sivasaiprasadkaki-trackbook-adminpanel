@@ -815,21 +815,21 @@ export default function EntriesView({ onEntryLogged }: EntriesViewProps) {
             
             /* LIST VIEW: Professional Data Table */
             <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-              <div className="overflow-x-auto">
+              <div className="overflow-auto max-h-[500px] relative">
                 <table className="w-full text-left border-collapse">
                   <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                      <th className="py-3.5 px-4 font-semibold">Date</th>
-                      <th className="py-3.5 px-4 font-semibold">Merchant / Details</th>
-                      <th className="py-3.5 px-4 font-semibold">Category</th>
-                      <th className="py-3.5 px-4 font-semibold">Payment Mode</th>
-                      <th className="py-3.5 px-4 font-semibold text-right">Cash In</th>
-                      <th className="py-3.5 px-4 font-semibold text-right">Cash Out</th>
-                      <th className="py-3.5 px-4 font-semibold text-right">Balance</th>
-                      <th className="py-3.5 px-4 font-semibold text-center">Attachment</th>
-                      <th className="py-3.5 px-4 font-semibold">Created By</th>
-                      <th className="py-3.5 px-4 font-semibold">Created Time</th>
-                      <th className="py-3.5 px-4 font-semibold text-center">Actions</th>
+                    <tr className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Date</th>
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Merchant / Details</th>
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Category</th>
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Payment Mode</th>
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold text-right shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Cash In</th>
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold text-right shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Cash Out</th>
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold text-right shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Balance</th>
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold text-center shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Attachment</th>
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Created By</th>
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Created Time</th>
+                      <th className="sticky top-0 bg-slate-50 z-10 py-3.5 px-4 font-semibold text-center shadow-[inset_0_-1px_0_rgba(226,232,240,1)]">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs text-slate-700 bg-white">
